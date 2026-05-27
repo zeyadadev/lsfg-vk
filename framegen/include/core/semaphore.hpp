@@ -20,7 +20,7 @@ namespace LSFG::Core {
         Semaphore() noexcept = default;
 
         ///
-        /// Create the semaphore.
+        /// Create the semaphore (owning).
         ///
         /// @param device Vulkan device
         /// @param initial Optional initial value for creating a timeline semaphore.
@@ -30,14 +30,16 @@ namespace LSFG::Core {
         Semaphore(const Core::Device& device, std::optional<uint32_t> initial = std::nullopt);
 
         ///
-        /// Import a semaphore.
+        /// Adopt an externally-created VkSemaphore.
+        ///
+        /// The supplied semaphore is wrapped but NOT destroyed when this object
+        /// goes out of scope. The owner of the semaphore must keep it alive for
+        /// at least as long as this Core::Semaphore.
         ///
         /// @param device Vulkan device
-        /// @param fd File descriptor to import the semaphore from.
+        /// @param adopted The pre-existing semaphore to adopt.
         ///
-        /// @throws LSFG::vulkan_error if object creation fails.
-        ///
-        Semaphore(const Core::Device& device, int fd);
+        Semaphore(const Core::Device& device, VkSemaphore adopted);
 
         ///
         /// Signal the semaphore to a specific value.

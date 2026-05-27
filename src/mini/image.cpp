@@ -12,16 +12,10 @@ using namespace Mini;
 
 Image::Image(VkDevice device, VkPhysicalDevice physicalDevice,
         VkExtent2D extent, VkFormat format,
-        VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int* fd)
+        VkImageUsageFlags usage, VkImageAspectFlags aspectFlags)
         : extent(extent), format(format), aspectFlags(aspectFlags) {
-    // create image
-    const VkExternalMemoryImageCreateInfo externalInfo{
-        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR
-    };
     const VkImageCreateInfo desc{
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = &externalInfo,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = format,
         .extent = {
@@ -66,14 +60,9 @@ Image::Image(VkDevice device, VkPhysicalDevice physicalDevice,
         .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO_KHR,
         .image = imageHandle,
     };
-    const VkExportMemoryAllocateInfo exportInfo{
-        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-        .pNext = &dedicatedInfo,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR
-    };
     const VkMemoryAllocateInfo allocInfo{
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &exportInfo,
+        .pNext = &dedicatedInfo,
         .allocationSize = memReqs.size,
         .memoryTypeIndex = memType.value()
     };
@@ -86,27 +75,19 @@ Image::Image(VkDevice device, VkPhysicalDevice physicalDevice,
     if (res != VK_SUCCESS)
         throw LSFG::vulkan_error(res, "Failed to bind memory to Vulkan image");
 
-    // obtain the sharing fd
-    const VkMemoryGetFdInfoKHR fdInfo{
-        .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR,
-        .memory = memoryHandle,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT_KHR,
-    };
-    res = Layer::ovkGetMemoryFdKHR(device, &fdInfo, fd);
-    if (res != VK_SUCCESS || *fd < 0)
-        throw LSFG::vulkan_error(res, "Failed to obtain sharing fd for Vulkan image");
-
     // store objects in shared ptr
     this->image = std::shared_ptr<VkImage>(
         new VkImage(imageHandle),
         [dev = device](VkImage* img) {
             Layer::ovkDestroyImage(dev, *img, nullptr);
+            delete img;
         }
     );
     this->memory = std::shared_ptr<VkDeviceMemory>(
         new VkDeviceMemory(memoryHandle),
         [dev = device](VkDeviceMemory* mem) {
             Layer::ovkFreeMemory(dev, *mem, nullptr);
+            delete mem;
         }
     );
 }

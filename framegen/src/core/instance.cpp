@@ -4,46 +4,30 @@
 #include "core/instance.hpp"
 #include "common/exception.hpp"
 
-#include <cstdint>
 #include <memory>
-#include <vector>
 
 using namespace LSFG::Core;
 
-const std::vector<const char*> requiredExtensions = {
+Instance::Instance(PFN_vkGetInstanceProcAddr getInstanceProcAddr, VkInstance instance) {
+    if (getInstanceProcAddr == nullptr || instance == VK_NULL_HANDLE)
+        throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED,
+            "Null GIPA or VkInstance provided to Core::Instance");
 
-};
+    // Use volkInitializeCustom so volk dispatches through the caller-provided
+    // GIPA instead of the loader's exported symbol. From inside a Vulkan layer
+    // the loader's GIPA returns trampolines that expect loader-wrapped handles
+    // — but framegen receives next-layer-wrapped handles, so the loader would
+    // reject them.
+    volkInitializeCustom(getInstanceProcAddr);
+    // Use the "Only" variant: loading device-level entrypoints via the
+    // instance GIPA causes the Vulkan loader to allocate a trampoline slot
+    // per unknown extension function and exhaust its fixed-size array. volk
+    // resolves device entrypoints later through volkLoadDevice anyway.
+    volkLoadInstanceOnly(instance);
 
-Instance::Instance() {
-    volkInitialize();
-
-    // create Vulkan instance
-    const VkApplicationInfo appInfo{
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "lsfg-vk-base",
-        .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
-        .pEngineName = "lsfg-vk-base",
-        .engineVersion = VK_MAKE_VERSION(0, 0, 1),
-        .apiVersion = VK_API_VERSION_1_3
-    };
-    const VkInstanceCreateInfo createInfo{
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &appInfo,
-        .enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size()),
-        .ppEnabledExtensionNames = requiredExtensions.data()
-    };
-    VkInstance instanceHandle{};
-    auto res = vkCreateInstance(&createInfo, nullptr, &instanceHandle);
-    if (res != VK_SUCCESS)
-        throw LSFG::vulkan_error(res, "Failed to create Vulkan instance");
-
-    volkLoadInstance(instanceHandle);
-
-    // store in shared ptr
+    // non-owning: deleter does nothing; the application owns this VkInstance
     this->instance = std::shared_ptr<VkInstance>(
-        new VkInstance(instanceHandle),
-        [](VkInstance* instance) {
-            vkDestroyInstance(*instance, nullptr);
-        }
+        new VkInstance(instance),
+        [](const VkInstance* handle) { delete handle; }
     );
 }

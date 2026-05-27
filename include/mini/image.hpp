@@ -16,7 +16,7 @@ namespace Mini {
         Image() noexcept = default;
 
         ///
-        /// Create the image and export the backing fd
+        /// Create the image.
         ///
         /// @param device Vulkan device
         /// @param physicalDevice Vulkan physical device
@@ -24,12 +24,11 @@ namespace Mini {
         /// @param format Vulkan format of the image
         /// @param usage Usage flags for the image
         /// @param aspectFlags Aspect flags for the image view
-        /// @param fd Pointer to an integer where the file descriptor will be stored.
         ///
         /// @throws LSFG::vulkan_error if object creation fails.
         ///
         Image(VkDevice device, VkPhysicalDevice physicalDevice, VkExtent2D extent, VkFormat format,
-            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int* fd);
+            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags);
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->image; }

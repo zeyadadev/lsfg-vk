@@ -16,7 +16,7 @@ using namespace LSFG_3_1::Shaders;
 Generate::Generate(Vulkan& vk,
     Core::Image inImg1, Core::Image inImg2,
     Core::Image inImg3, Core::Image inImg4, Core::Image inImg5,
-    const std::vector<int>& fds, VkFormat format)
+    const std::vector<VkImage>& outImages, VkFormat format)
         : inImg1(std::move(inImg1)), inImg2(std::move(inImg2)),
           inImg3(std::move(inImg3)), inImg4(std::move(inImg4)),
           inImg5(std::move(inImg5)) {
@@ -31,12 +31,12 @@ Generate::Generate(Vulkan& vk,
     this->samplers.at(1) = vk.resources.getSampler(vk.device,
         VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_COMPARE_OP_ALWAYS);
 
-    // create internal images/outputs
+    // adopt caller-provided output images
     const VkExtent2D extent = this->inImg1.getExtent();
     for (size_t i = 0; i < vk.generationCount; i++)
-        this->outImgs.emplace_back(vk.device, extent, format,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, fds.empty() ? -1 : fds.at(i));
+        this->outImgs.emplace_back(vk.device,
+            outImages.at(i), extent, format,
+            VK_IMAGE_ASPECT_COLOR_BIT);
 
     // hook up shaders
     for (size_t i = 0; i < vk.generationCount; i++) {

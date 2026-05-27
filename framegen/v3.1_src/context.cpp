@@ -14,15 +14,13 @@
 using namespace LSFG_3_1;
 
 Context::Context(Vulkan& vk,
-        int in0, int in1, const std::vector<int>& outN,
+        VkImage in0, VkImage in1, const std::vector<VkImage>& outN,
         VkExtent2D extent, VkFormat format) {
-    // import input images
-    this->inImg_0 = Core::Image(vk.device, extent, format,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT, in0);
-    this->inImg_1 = Core::Image(vk.device, extent, format,
-        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT, in1);
+    // adopt input images (caller-owned)
+    this->inImg_0 = Core::Image(vk.device, in0, extent, format,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+    this->inImg_1 = Core::Image(vk.device, in1, extent, format,
+        VK_IMAGE_ASPECT_COLOR_BIT);
 
     // prepare render data
     for (size_t i = 0; i < 8; i++) {
@@ -61,7 +59,7 @@ Context::Context(Vulkan& vk,
 }
 
 void Context::present(Vulkan& vk,
-        int inSem, const std::vector<int>& outSem) {
+        VkSemaphore inSem, const std::vector<VkSemaphore>& outSems) {
     auto& data = this->data.at(this->frameIdx % 8);
 
     // 3. wait for completion of previous frame in this slot
@@ -72,7 +70,8 @@ void Context::present(Vulkan& vk,
     data.shouldWait = true;
 
     // 1. create mipmaps and process input image
-    if (inSem >= 0) data.inSemaphore = Core::Semaphore(vk.device, inSem);
+    if (inSem != VK_NULL_HANDLE)
+        data.inSemaphore = Core::Semaphore(vk.device, inSem);
     for (size_t i = 0; i < vk.generationCount; i++)
         data.internalSemaphores.at(i) = Core::Semaphore(vk.device);
 
@@ -85,8 +84,9 @@ void Context::present(Vulkan& vk,
     this->beta.Dispatch(data.cmdBuffer1, this->frameIdx);
 
     data.cmdBuffer1.end();
-    std::vector<Core::Semaphore> waits = { data.inSemaphore };
-    if (inSem < 0) waits.clear();
+    std::vector<Core::Semaphore> waits;
+    if (inSem != VK_NULL_HANDLE)
+        waits.push_back(data.inSemaphore);
     data.cmdBuffer1.submit(vk.device.getComputeQueue(), std::nullopt,
         waits, std::nullopt,
         data.internalSemaphores, std::nullopt);
@@ -95,7 +95,8 @@ void Context::present(Vulkan& vk,
     for (size_t pass = 0; pass < vk.generationCount; pass++) {
         auto& internalSemaphore = data.internalSemaphores.at(pass);
         auto& outSemaphore = data.outSemaphores.at(pass);
-        if (inSem >= 0) outSemaphore = Core::Semaphore(vk.device, outSem.empty() ? -1 : outSem.at(pass));
+        if (pass < outSems.size() && outSems.at(pass) != VK_NULL_HANDLE)
+            outSemaphore = Core::Semaphore(vk.device, outSems.at(pass));
         auto& completionFence = data.completionFences.at(pass);
         completionFence = Core::Fence(vk.device);
 
@@ -111,8 +112,9 @@ void Context::present(Vulkan& vk,
         this->generate.Dispatch(buf2, this->frameIdx, pass);
 
         buf2.end();
-        std::vector<Core::Semaphore> signals = { outSemaphore };
-        if (inSem < 0) signals.clear();
+        std::vector<Core::Semaphore> signals;
+        if (pass < outSems.size() && outSems.at(pass) != VK_NULL_HANDLE)
+            signals.push_back(outSemaphore);
         buf2.submit(vk.device.getComputeQueue(), completionFence,
             { internalSemaphore }, std::nullopt,
             signals, std::nullopt);

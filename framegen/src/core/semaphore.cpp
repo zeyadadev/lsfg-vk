@@ -28,52 +28,27 @@ Semaphore::Semaphore(const Core::Device& device, std::optional<uint32_t> initial
     if (res != VK_SUCCESS || semaphoreHandle == VK_NULL_HANDLE)
         throw LSFG::vulkan_error(res, "Unable to create semaphore");
 
-    // store semaphore in shared ptr
+    // store semaphore in shared ptr (owning)
     this->isTimeline = initial.has_value();
     this->semaphore = std::shared_ptr<VkSemaphore>(
         new VkSemaphore(semaphoreHandle),
         [dev = device.handle()](VkSemaphore* semaphoreHandle) {
             vkDestroySemaphore(dev, *semaphoreHandle, nullptr);
+            delete semaphoreHandle;
         }
     );
 }
 
-Semaphore::Semaphore(const Core::Device& device, int fd) {
-    // create semaphore
-    const VkExportSemaphoreCreateInfo exportInfo{
-        .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
-    };
-    const VkSemaphoreCreateInfo desc{
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-        .pNext = &exportInfo
-    };
-    VkSemaphore semaphoreHandle{};
-    auto res = vkCreateSemaphore(device.handle(), &desc, nullptr, &semaphoreHandle);
-    if (res != VK_SUCCESS || semaphoreHandle == VK_NULL_HANDLE)
-        throw LSFG::vulkan_error(res, "Unable to create semaphore");
+Semaphore::Semaphore(const Core::Device& /*device*/, VkSemaphore adopted) {
+    if (adopted == VK_NULL_HANDLE)
+        throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED,
+            "Null VkSemaphore adopted into Core::Semaphore");
 
-    // import semaphore from fd
-    auto vkImportSemaphoreFdKHR = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
-        vkGetDeviceProcAddr(device.handle(), "vkImportSemaphoreFdKHR"));
-
-    const VkImportSemaphoreFdInfoKHR importInfo{
-        .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
-        .semaphore = semaphoreHandle,
-        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
-        .fd = fd // closes the fd
-    };
-    res = vkImportSemaphoreFdKHR(device.handle(), &importInfo);
-    if (res != VK_SUCCESS)
-        throw LSFG::vulkan_error(res, "Unable to import semaphore from fd");
-
-    // store semaphore in shared ptr
     this->isTimeline = false;
+    // non-owning: do not destroy the semaphore; it is owned by the caller
     this->semaphore = std::shared_ptr<VkSemaphore>(
-        new VkSemaphore(semaphoreHandle),
-        [dev = device.handle()](VkSemaphore* semaphoreHandle) {
-            vkDestroySemaphore(dev, *semaphoreHandle, nullptr);
-        }
+        new VkSemaphore(adopted),
+        [](const VkSemaphore* handle) { delete handle; }
     );
 }
 

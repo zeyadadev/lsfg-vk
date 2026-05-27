@@ -18,7 +18,7 @@ namespace LSFG::Core {
         Image() noexcept = default;
 
         ///
-        /// Create the image.
+        /// Create the image (owning).
         ///
         /// @param device Vulkan device
         /// @param extent Extent of the image in pixels.
@@ -34,24 +34,26 @@ namespace LSFG::Core {
             VkImageAspectFlags aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT);
 
         ///
-        /// Create the image with shared backing memory.
+        /// Adopt an externally-created Vulkan image.
+        ///
+        /// The supplied VkImage is wrapped (image view is created, layout is tracked) but
+        /// is NOT destroyed when this object goes out of scope. The owner of the image
+        /// must keep it alive for at least as long as this Core::Image.
         ///
         /// @param device Vulkan device
+        /// @param adopted The pre-existing VkImage to adopt.
         /// @param extent Extent of the image in pixels.
         /// @param format Vulkan format of the image
-        /// @param usage Usage flags for the image
         /// @param aspectFlags Aspect flags for the image view
-        /// @param fd File descriptor for shared memory.
         ///
-        /// @throws LSFG::vulkan_error if object creation fails.
+        /// @throws LSFG::vulkan_error if view creation fails.
         ///
-        Image(const Core::Device& device, VkExtent2D extent, VkFormat format,
-            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int fd);
+        Image(const Core::Device& device, VkImage adopted,
+            VkExtent2D extent, VkFormat format,
+            VkImageAspectFlags aspectFlags = VK_IMAGE_ASPECT_COLOR_BIT);
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->image; }
-        /// Get the Vulkan device memory handle.
-        [[nodiscard]] auto getMemory() const { return *this->memory; }
         /// Get the Vulkan image view handle.
         [[nodiscard]] auto getView() const { return *this->view; }
         /// Get the extent of the image.
@@ -74,7 +76,7 @@ namespace LSFG::Core {
         ~Image() = default;
     private:
         std::shared_ptr<VkImage> image;
-        std::shared_ptr<VkDeviceMemory> memory;
+        std::shared_ptr<VkDeviceMemory> memory; // null for adopted images
         std::shared_ptr<VkImageView> view;
 
         std::shared_ptr<VkImageLayout> layout;

@@ -26,17 +26,29 @@ namespace {
     std::optional<Core::Instance> instance;
     std::optional<Vulkan> device;
     std::unordered_map<int32_t, Context> contexts;
+    bool finalizeRegistered{};
+
+    void finalizeAtExit() {
+        LSFG_3_1::finalize();
+    }
 }
 
-void LSFG_3_1::initialize(uint64_t deviceUUID,
+void LSFG_3_1::initialize(PFN_vkGetInstanceProcAddr getInstanceProcAddr,
+        PFN_vkGetDeviceProcAddr getDeviceProcAddr,
+        VkInstance vkInstance,
+        VkPhysicalDevice physicalDevice,
+        VkDevice vkDevice,
+        uint32_t computeQueueFamily,
+        VkQueue computeQueue,
         bool isHdr, float flowScale, uint64_t generationCount,
         const std::function<std::vector<uint8_t>(const std::string&)>& loader) {
     if (instance.has_value() || device.has_value())
         return;
 
-    instance.emplace();
+    instance.emplace(getInstanceProcAddr, vkInstance);
     device.emplace(Vulkan {
-        .device{*instance, deviceUUID},
+        .device{*instance, getDeviceProcAddr, physicalDevice, vkDevice,
+            computeQueueFamily, computeQueue},
         .generationCount = generationCount,
         .flowScale = flowScale,
         .isHdr = isHdr
@@ -50,10 +62,14 @@ void LSFG_3_1::initialize(uint64_t deviceUUID,
     device->shaders = Pool::ShaderPool(loader);
 
     std::srand(static_cast<uint32_t>(std::time(nullptr)));
+    if (!finalizeRegistered) {
+        std::atexit(finalizeAtExit);
+        finalizeRegistered = true;
+    }
 }
 
 int32_t LSFG_3_1::createContext(
-        int in0, int in1, const std::vector<int>& outN,
+        VkImage in0, VkImage in1, const std::vector<VkImage>& outN,
         VkExtent2D extent, VkFormat format) {
     if (!instance.has_value() || !device.has_value())
         throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED, "LSFG not initialized");
@@ -63,7 +79,8 @@ int32_t LSFG_3_1::createContext(
     return id;
 }
 
-void LSFG_3_1::presentContext(int32_t id, int inSem, const std::vector<int>& outSem) {
+void LSFG_3_1::presentContext(int32_t id, VkSemaphore inSem,
+        const std::vector<VkSemaphore>& outSems) {
     if (!instance.has_value() || !device.has_value())
         throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED, "LSFG not initialized");
 
@@ -71,7 +88,7 @@ void LSFG_3_1::presentContext(int32_t id, int inSem, const std::vector<int>& out
     if (it == contexts.end())
         throw LSFG::vulkan_error(VK_ERROR_UNKNOWN, "Context not found");
 
-    it->second.present(*device, inSem, outSem);
+    it->second.present(*device, inSem, outSems);
 }
 
 void LSFG_3_1::deleteContext(int32_t id) {

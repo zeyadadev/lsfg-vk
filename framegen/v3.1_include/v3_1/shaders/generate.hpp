@@ -34,14 +34,14 @@ namespace LSFG_3_1::Shaders {
         /// @param inImg3 Input image 3.
         /// @param inImg4 Input image 4.
         /// @param inImg5 Input image 5.
-        /// @param fds File descriptors for the output images.
+        /// @param outImages Output image handles (adopted, not destroyed here).
         ///
         /// @throws LSFG::vulkan_error if resource creation fails.
         ///
         Generate(Vulkan& vk,
             Core::Image inImg1, Core::Image inImg2,
             Core::Image inImg3, Core::Image inImg4, Core::Image inImg5,
-            const std::vector<int>& fds, VkFormat format);
+            const std::vector<VkImage>& outImages, VkFormat format);
 
         ///
         /// Dispatch the shaderchain.

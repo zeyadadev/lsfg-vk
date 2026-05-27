@@ -6,6 +6,8 @@
 #include "layer.hpp"
 
 #include <vulkan/vulkan_core.h>
+#include <lsfg_3_1.hpp>
+#include <lsfg_3_1p.hpp>
 
 #include <unordered_map>
 #include <filesystem>
@@ -21,6 +23,11 @@
 using namespace Hooks;
 
 namespace {
+
+    /// The most-recently-created VkInstance. Most apps create exactly one; if
+    /// they create more, the last one wins. We snapshot this into DeviceInfo
+    /// when the device is created so framegen can be initialised against it.
+    VkInstance lastCreatedInstance = VK_NULL_HANDLE;
 
     ///
     /// Add extensions to the instance create info.
@@ -46,14 +53,69 @@ namespace {
             throw std::runtime_error(
                 "Required Vulkan instance extensions are not present."
                 "Your GPU driver is not supported.");
+        if (res == VK_SUCCESS)
+            lastCreatedInstance = *pInstance;
         return res;
     }
 
     /// Map of devices to related information.
     std::unordered_map<VkDevice, DeviceInfo> deviceToInfo;
 
+    std::unordered_map<VkSwapchainKHR, LsContext> swapchains;
+    std::unordered_map<VkSwapchainKHR, VkDevice> swapchainToDeviceTable;
+    std::unordered_map<VkSwapchainKHR, VkPresentModeKHR> swapchainToPresent;
+
     ///
-    /// Add extensions to the device create info.
+    /// Walk pCreateInfo->pNext, OR-in framegen's required feature bits where the
+    /// app already provides the relevant feature struct. Returns a triple of
+    /// flags indicating which struct types we still need to allocate ourselves.
+    ///
+    struct FoundFeatureStructs {
+        bool features12{false};
+        bool sync2{false};
+        bool robustness2{false};
+    };
+    FoundFeatureStructs orInFeatures(const VkDeviceCreateInfo* pCreateInfo) {
+        FoundFeatureStructs found{};
+        auto* base = const_cast<VkBaseOutStructure*>(
+            reinterpret_cast<const VkBaseOutStructure*>(pCreateInfo->pNext));
+        while (base != nullptr) {
+            switch (base->sType) {
+                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES: {
+                    auto* f = reinterpret_cast<VkPhysicalDeviceVulkan12Features*>(base);
+                    f->vulkanMemoryModel = VK_TRUE;
+                    f->timelineSemaphore = VK_TRUE;
+                    found.features12 = true;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: {
+                    auto* f = reinterpret_cast<VkPhysicalDeviceVulkan13Features*>(base);
+                    f->synchronization2 = VK_TRUE;
+                    found.sync2 = true;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES: {
+                    auto* f = reinterpret_cast<VkPhysicalDeviceSynchronization2Features*>(base);
+                    f->synchronization2 = VK_TRUE;
+                    found.sync2 = true;
+                    break;
+                }
+                case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT: {
+                    auto* f = reinterpret_cast<VkPhysicalDeviceRobustness2FeaturesEXT*>(base);
+                    f->nullDescriptor = VK_TRUE;
+                    found.robustness2 = true;
+                    break;
+                }
+                default:
+                    break;
+            }
+            base = base->pNext;
+        }
+        return found;
+    }
+
+    ///
+    /// Add extensions, features, and a compute queue to the device create info.
     /// (function pointers are not initialized yet)
     ///
     VkResult myvkCreateDevicePre(
@@ -61,7 +123,7 @@ namespace {
             const VkDeviceCreateInfo* pCreateInfo,
             const VkAllocationCallbacks* pAllocator,
             VkDevice* pDevice) {
-        // add extensions
+        // 1. extensions
         auto extensions = Utils::addExtensions(
             pCreateInfo->ppEnabledExtensionNames,
             pCreateInfo->enabledExtensionCount,
@@ -69,17 +131,65 @@ namespace {
                 "VK_KHR_external_memory",
                 "VK_KHR_external_memory_fd",
                 "VK_KHR_external_semaphore",
-                "VK_KHR_external_semaphore_fd"
+                "VK_KHR_external_semaphore_fd",
+                "VK_KHR_synchronization2",
+                "VK_EXT_robustness2",
             }
         );
+
+        // 2. features — OR-in to existing structs, allocate the rest
+        const FoundFeatureStructs found = orInFeatures(pCreateInfo);
+
+        // thread_local so the structs outlive this call into the driver
+        thread_local VkPhysicalDeviceRobustness2FeaturesEXT robustness2Storage{};
+        thread_local VkPhysicalDeviceSynchronization2Features sync2Storage{};
+        thread_local VkPhysicalDeviceVulkan12Features features12Storage{};
+
+        const void* newPNext = pCreateInfo->pNext;
+        if (!found.robustness2) {
+            robustness2Storage = VkPhysicalDeviceRobustness2FeaturesEXT{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
+                .pNext = const_cast<void*>(newPNext),
+                .nullDescriptor = VK_TRUE,
+            };
+            newPNext = &robustness2Storage;
+        }
+        if (!found.sync2) {
+            sync2Storage = VkPhysicalDeviceSynchronization2Features{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES,
+                .pNext = const_cast<void*>(newPNext),
+                .synchronization2 = VK_TRUE,
+            };
+            newPNext = &sync2Storage;
+        }
+        if (!found.features12) {
+            features12Storage = VkPhysicalDeviceVulkan12Features{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+                .pNext = const_cast<void*>(newPNext),
+                .timelineSemaphore = VK_TRUE,
+                .vulkanMemoryModel = VK_TRUE,
+            };
+            newPNext = &features12Storage;
+        }
+
+        // 3. assemble create info and forward (queue handling deferred to post-hook,
+        //    which uses findQueue with VK_QUEUE_COMPUTE_BIT against the app's queues)
         VkDeviceCreateInfo createInfo = *pCreateInfo;
+        createInfo.pNext = newPNext;
         createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         createInfo.ppEnabledExtensionNames = extensions.data();
+
         auto res = Layer::ovkCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
         if (res == VK_ERROR_EXTENSION_NOT_PRESENT)
             throw std::runtime_error(
-                "Required Vulkan device extensions are not present."
+                "Required Vulkan device extensions (VK_EXT_robustness2/VK_KHR_synchronization2) "
+                "are not present. "
                 "Your GPU driver is not supported.");
+        if (res == VK_ERROR_FEATURE_NOT_PRESENT)
+            throw std::runtime_error(
+                "Required Vulkan device features "
+                "(vulkanMemoryModel/timelineSemaphore/synchronization2/nullDescriptor) "
+                "are not supported by your GPU driver.");
         return res;
     }
 
@@ -91,23 +201,42 @@ namespace {
             VkDeviceCreateInfo* pCreateInfo,
             const VkAllocationCallbacks*,
             VkDevice* pDevice) {
+        // graphics queue: from the app's createInfo
+        auto graphicsQ = Utils::findQueue(*pDevice, physicalDevice, pCreateInfo,
+            VK_QUEUE_GRAPHICS_BIT);
+
+        // compute queue: most Mali queue families are graphics+compute, so the app's
+        // existing queues usually satisfy this — findQueue picks the first match.
+        auto computeQ = Utils::findQueue(*pDevice, physicalDevice, pCreateInfo,
+            VK_QUEUE_COMPUTE_BIT);
+
         deviceToInfo.emplace(*pDevice, DeviceInfo {
+            .instance = lastCreatedInstance,
             .device = *pDevice,
             .physicalDevice = physicalDevice,
-            .queue = Utils::findQueue(*pDevice, physicalDevice, pCreateInfo, VK_QUEUE_GRAPHICS_BIT)
+            .queue = graphicsQ,
+            .computeQueue = computeQ,
         });
         return VK_SUCCESS;
     }
 
     /// Erase the device information when the device is destroyed.
     void myvkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) noexcept {
+        for (auto it = swapchainToDeviceTable.begin(); it != swapchainToDeviceTable.end();) {
+            if (it->second == device) {
+                const VkSwapchainKHR swapchain = it->first;
+                swapchains.erase(swapchain);
+                swapchainToPresent.erase(swapchain);
+                it = swapchainToDeviceTable.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        LSFG_3_1P::finalize();
+        LSFG_3_1::finalize();
         deviceToInfo.erase(device);
         Layer::ovkDestroyDevice(device, pAllocator);
     }
-
-    std::unordered_map<VkSwapchainKHR, LsContext> swapchains;
-    std::unordered_map<VkSwapchainKHR, VkDevice> swapchainToDeviceTable;
-    std::unordered_map<VkSwapchainKHR, VkPresentModeKHR> swapchainToPresent;
 
     ///
     /// Adjust swapchain creation parameters and create a swapchain context.

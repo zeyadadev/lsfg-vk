@@ -28,28 +28,30 @@ namespace LSFG_3_1 {
         /// Create a context
         ///
         /// @param vk The Vulkan instance to use.
-        /// @param in0 File descriptor for the first input image.
-        /// @param in1 File descriptor for the second input image.
-        /// @param outN File descriptors for the output images.
+        /// @param in0 First input image (adopted, not destroyed by framegen).
+        /// @param in1 Second input image (adopted, not destroyed by framegen).
+        /// @param outN Output images (adopted). The count defines the LSFG level.
         /// @param extent The size of the images.
         /// @param format The format of the images.
         ///
         /// @throws LSFG::vulkan_error if the context fails to initialize.
         ///
         Context(Vulkan& vk,
-            int in0, int in1, const std::vector<int>& outN,
+            VkImage in0, VkImage in1, const std::vector<VkImage>& outN,
             VkExtent2D extent, VkFormat format);
 
         ///
         /// Present on the context.
         ///
         /// @param inSem Semaphore to wait on before starting the generation.
-        /// @param outSem Semaphores to signal after each generation is done.
+        ///              VK_NULL_HANDLE skips the wait.
+        /// @param outSems Semaphores to signal after each generation is done.
+        ///                May be empty to skip signalling.
         ///
         /// @throws LSFG::vulkan_error if the context fails to present.
         ///
         void present(Vulkan& vk,
-            int inSem, const std::vector<int>& outSem);
+            VkSemaphore inSem, const std::vector<VkSemaphore>& outSems);
 
         // Trivially copyable, moveable and destructible
         Context(const Context&) = default;

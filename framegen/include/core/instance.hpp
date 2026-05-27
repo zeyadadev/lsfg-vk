@@ -7,18 +7,25 @@
 namespace LSFG::Core {
 
     ///
-    /// C++ wrapper class for a Vulkan instance.
+    /// Non-owning C++ wrapper around an application-provided Vulkan instance.
     ///
-    /// This class manages the lifetime of a Vulkan instance.
+    /// Framegen no longer creates its own VkInstance; the application's instance
+    /// is adopted here so volk's dispatch can be loaded against it.
     ///
     class Instance {
     public:
         ///
-        /// Create the instance.
+        /// Wrap an application-provided Vulkan instance.
         ///
-        /// @throws LSFG::vulkan_error if object creation fails.
+        /// @param getInstanceProcAddr Caller-provided GIPA. volk's dispatch
+        ///        will be loaded through this; pass the next-layer's GIPA
+        ///        from inside a Vulkan layer, or libvulkan.so's GIPA from a
+        ///        regular app.
+        /// @param instance Application instance handle.
         ///
-        Instance();
+        /// @throws LSFG::vulkan_error if instance is VK_NULL_HANDLE.
+        ///
+        Instance(PFN_vkGetInstanceProcAddr getInstanceProcAddr, VkInstance instance);
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return this->instance ? *this->instance : VK_NULL_HANDLE; }

@@ -24,16 +24,6 @@ namespace Mini {
         ///
         Semaphore(VkDevice device);
 
-        ///
-        /// Import a semaphore.
-        ///
-        /// @param device Vulkan device
-        /// @param fd File descriptor to import the semaphore from.
-        ///
-        /// @throws LSFG::vulkan_error if object creation fails.
-        ///
-        Semaphore(VkDevice device, int* fd);
-
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->semaphore; }
 

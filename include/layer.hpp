@@ -5,6 +5,15 @@
 #include <cstdint>
 
 namespace Layer {
+    /// Get the next-layer's vkGetInstanceProcAddr. Functions returned from this
+    /// are valid for VkInstance / VkPhysicalDevice handles as seen from inside
+    /// this layer (i.e. the handles we pass around in DeviceInfo).
+    PFN_vkGetInstanceProcAddr getNextInstanceProcAddr();
+
+    /// Get the next-layer's vkGetDeviceProcAddr. Device functions returned from
+    /// this are valid for VkDevice handles as seen from inside this layer.
+    PFN_vkGetDeviceProcAddr getNextDeviceProcAddr();
+
     /// Call to the original vkCreateInstance function.
     VkResult ovkCreateInstance(
         const VkInstanceCreateInfo* pCreateInfo,

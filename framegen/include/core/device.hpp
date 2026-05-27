@@ -10,21 +10,32 @@
 namespace LSFG::Core {
 
     ///
-    /// C++ wrapper class for a Vulkan device.
+    /// Non-owning C++ wrapper around an application-provided Vulkan device.
     ///
-    /// This class manages the lifetime of a Vulkan device.
+    /// Framegen no longer creates its own VkDevice; the application's device
+    /// is adopted here so volk's dispatch can be loaded against it and queue
+    /// + family info is accessible to framegen's internals.
     ///
     class Device {
     public:
         ///
-        /// Create the device.
+        /// Wrap an application-provided device.
         ///
-        /// @param instance Vulkan instance
-        /// @param deviceUUID The UUID of the Vulkan device to use.
+        /// @param instance The application instance.
+        /// @param getDeviceProcAddr Caller-provided GDPA for @p device.
+        /// @param physicalDevice The application physical device.
+        /// @param device The application logical device.
+        /// @param computeFamilyIdx Index of a compute-capable queue family on @p device.
+        /// @param computeQueue Compute queue handle obtained from @p device.
         ///
-        /// @throws LSFG::vulkan_error if object creation fails.
+        /// @throws LSFG::vulkan_error if any handle is null.
         ///
-        Device(const Instance& instance, uint64_t deviceUUID);
+        Device(const Instance& instance,
+            PFN_vkGetDeviceProcAddr getDeviceProcAddr,
+            VkPhysicalDevice physicalDevice,
+            VkDevice device,
+            uint32_t computeFamilyIdx,
+            VkQueue computeQueue);
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->device; }

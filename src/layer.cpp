@@ -283,6 +283,14 @@ PFN_vkVoidFunction layer_vkGetDeviceProcAddr(VkDevice device, const char* pName)
 
 // original functions
 namespace Layer {
+    PFN_vkGetInstanceProcAddr getNextInstanceProcAddr() {
+        return next_vkGetInstanceProcAddr;
+    }
+
+    PFN_vkGetDeviceProcAddr getNextDeviceProcAddr() {
+        return next_vkGetDeviceProcAddr;
+    }
+
     VkResult ovkCreateInstance(
             const VkInstanceCreateInfo* pCreateInfo,
             const VkAllocationCallbacks* pAllocator,
