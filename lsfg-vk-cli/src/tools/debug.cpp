@@ -58,7 +58,7 @@ namespace {
         cmdbuf.copyBufferToImage(vk, stagingbuf, image);
         cmdbuf.end(vk);
 
-        const vk::TimelineSemaphore sema{vk, 0};
+        const vk::TimelineSemaphore sema{vk, uint32_t{0}};
         cmdbuf.submit(vk);
     }
 }

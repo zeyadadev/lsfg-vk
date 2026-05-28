@@ -170,3 +170,19 @@ Image::Image(const vk::Vulkan& vk,
         )),
         extent(extent) {
 }
+
+Image::Image(const vk::Vulkan& vk,
+            VkImage adopted,
+            VkExtent2D extent,
+            VkFormat format) :
+        // non-owning image handle: deleter is a no-op since the caller still
+        // owns the underlying VkImage. memory is left null because the caller
+        // also owns the bound VkDeviceMemory.
+        image(ls::owned_ptr<VkImage>(
+            new VkImage(adopted),
+            [](VkImage&) {} // no-op
+        )),
+        memory(), // intentionally null
+        view(createImageView(vk, adopted, format)),
+        extent(extent) {
+}

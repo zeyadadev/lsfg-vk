@@ -28,6 +28,20 @@ namespace vk {
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt);
 
+        /// adopt an externally-created VkImage (non-owning). The supplied
+        /// image is wrapped — an image view is created but the underlying
+        /// VkImage / VkDeviceMemory are NOT destroyed by this object. Useful
+        /// for sharing a single-device image between the layer and the
+        /// backend without an external memory handle.
+        /// @param vk the vulkan instance
+        /// @param adopted the pre-existing VkImage to adopt
+        /// @param extent extent of the image in pixels
+        /// @param format vulkan format of the image
+        Image(const vk::Vulkan& vk,
+            VkImage adopted,
+            VkExtent2D extent,
+            VkFormat format);
+
         /// get the image handle
         /// @return the image handle
         [[nodiscard]] const auto& handle() const { return this->image.get(); }

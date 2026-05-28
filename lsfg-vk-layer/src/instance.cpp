@@ -107,14 +107,14 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
     if (!this->active_profile.has_value())
         return;
 
+    // single-device backend shares VkImage/VkSemaphore handles with the
+    // app's device, so we no longer need the external_memory_fd /
+    // external_semaphore_fd extensions. Drivers without them (e.g. Mali)
+    // would otherwise refuse vkCreateDevice and break the layer entirely.
     auto extensions = add_extensions(
         createInfo.ppEnabledExtensionNames,
         createInfo.enabledExtensionCount,
         {
-            "VK_KHR_external_memory",
-            "VK_KHR_external_memory_fd",
-            "VK_KHR_external_semaphore",
-            "VK_KHR_external_semaphore_fd",
             "VK_KHR_timeline_semaphore"
         }
     );
@@ -182,19 +182,11 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             else
                 dll = ls::findShaderDll();
 
+            // single-device backend: adopt the layer's VkInstance/VkDevice
+            // instead of creating a second pair. The DevicePicker callback
+            // is unused in this path.
             this->backend.emplace(
-                [gpu = profile.gpu](
-                    const std::string& deviceName,
-                    std::pair<const std::string&, const std::string&> ids,
-                    const std::optional<std::string>& pci
-                ) {
-                    if (!gpu)
-                        return true;
-
-                    return (deviceName == *gpu)
-                        || (ids.first + ":" + ids.second == *gpu)
-                        || (pci && *pci == *gpu);
-                },
+                vk,
                 dll, global.allow_fp16
             );
         } catch (const std::exception& e) {

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -10,6 +11,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <vulkan/vulkan_core.h>
+
+namespace vk {
+    class Vulkan;
+}
 
 namespace lsfgvk::backend {
 
@@ -58,7 +65,7 @@ namespace lsfgvk::backend {
     class [[gnu::visibility("default")]] Instance {
     public:
         ///
-        /// Create a lsfg-vk instance
+        /// Create a lsfg-vk instance that owns its own Vulkan device.
         ///
         /// @param devicePicker Function that picks a physical device based on some identifiers.
         /// @param shaderDllPath Path to the Lossless.dll file to load shaders from.
@@ -73,19 +80,28 @@ namespace lsfgvk::backend {
         );
 
         ///
-        /// Open a frame generation context.
+        /// Create a lsfg-vk instance that adopts the caller's Vulkan device.
         ///
-        /// The VkFormat of the exchanged images is inferred from whether hdr is true or false:
-        /// - false: VK_FORMAT_R8G8B8A8_UNORM
-        /// - true: VK_FORMAT_R16G16B16A16_SFLOAT
+        /// The backend won't create its own VkInstance/VkDevice — bridge images
+        /// and the sync semaphore are shared as Vulkan handles instead of file
+        /// descriptors. This is the only viable path on drivers that don't
+        /// support `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT` (e.g. Mali).
         ///
-        /// The application and library must keep track of the frame index. When the next frame
-        /// is ready, signal the syncFd with one increment (with the first trigger being 1).
-        /// Each generated frame will increment the semaphore by one:
-        /// - Application signals 1 -> Start generating with (curr, next) source images
-        /// - Library signals 1 -> First frame between (curr, next) is ready
-        /// - Library signals N -> N-th frame between (curr, next) is ready
-        /// - Application signals N+1 -> Start generating with (next, curr) source images
+        /// @param sharedVulkan Reference to the caller's vk::Vulkan; must
+        ///        outlive this Instance.
+        /// @param shaderDllPath Path to the Lossless.dll file to load shaders from.
+        /// @param allowLowPrecision Whether to load low-precision (FP16) shaders if supported.
+        ///
+        /// @throws backend::error on failure
+        ///
+        Instance(
+            const vk::Vulkan& sharedVulkan,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision
+        );
+
+        ///
+        /// Open a frame generation context (fd-based, dual-device).
         ///
         /// @param sourceFds Pair of file descriptors for the source images alternated between.
         /// @param destFds Vector with file descriptors to import output images from.
@@ -102,6 +118,35 @@ namespace lsfgvk::backend {
             std::pair<int, int> sourceFds,
             const std::vector<int>& destFds,
             int syncFd,
+            uint32_t width, uint32_t height,
+            bool hdr, float flow, bool perf
+        );
+
+        ///
+        /// Open a frame generation context (handle-based, single-device).
+        ///
+        /// All VkImage / VkSemaphore handles are adopted — the caller retains
+        /// ownership and must keep them alive while the context is open.
+        ///
+        /// The same timeline-semaphore protocol applies as the fd-based path:
+        /// - Application signals N -> backend wakes and starts generating
+        /// - Backend signals N+1..N+M -> generated frame M is ready
+        ///
+        /// @param sourceImages Pair of VkImages alternated between as source.
+        /// @param destImages Vector of VkImages to write generated frames into.
+        /// @param syncSemaphore Timeline VkSemaphore shared with the caller.
+        /// @param width Width of the images.
+        /// @param height Height of the images.
+        /// @param hdr Whether the images are HDR.
+        /// @param flow Motion flow factor.
+        /// @param perf Whether to enable performance mode.
+        ///
+        /// @throws backend::error on failure
+        ///
+        Context& openContext(
+            std::pair<VkImage, VkImage> sourceImages,
+            const std::vector<VkImage>& destImages,
+            VkSemaphore syncSemaphore,
             uint32_t width, uint32_t height,
             bool hdr, float flow, bool perf
         );

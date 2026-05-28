@@ -61,15 +61,19 @@ namespace lsfgvk::backend {
     /// instance class
     class InstanceImpl {
     public:
-        /// create an instance
-        /// (see lsfg-vk documentation)
+        /// create an instance that owns its Vulkan device
         InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision);
+
+        /// create an instance that adopts a caller-managed Vulkan device
+        InstanceImpl(const vk::Vulkan& sharedVk,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision);
 
         /// get the Vulkan instance
         /// @return the Vulkan instance
-        [[nodiscard]] const auto& getVulkan() const { return this->vk; }
+        [[nodiscard]] const vk::Vulkan& getVulkan() const { return *this->vkPtr; }
         /// get the shader registry
         /// @return the shader registry
         [[nodiscard]] const auto& getShaderRegistry() const { return this->shaders; }
@@ -81,11 +85,13 @@ namespace lsfgvk::backend {
         // Movable, non-copyable, custom destructor
         InstanceImpl(const InstanceImpl&) = delete;
         InstanceImpl& operator=(const InstanceImpl&) = delete;
-        InstanceImpl(InstanceImpl&&) = default;
-        InstanceImpl& operator=(InstanceImpl&&) = default;
+        InstanceImpl(InstanceImpl&&) = delete;
+        InstanceImpl& operator=(InstanceImpl&&) = delete;
         ~InstanceImpl();
     private:
-        vk::Vulkan vk;
+        std::optional<vk::Vulkan> ownedVk; // set only on the owning path
+        const vk::Vulkan* vkPtr;           // points at ownedVk or external
+
         ShaderRegistry shaders;
 
 #ifdef LSFGVK_TESTING_RENDERDOC
@@ -96,10 +102,12 @@ namespace lsfgvk::backend {
     /// context class
     class ContextImpl {
     public:
-        /// create a context
-        /// (see lsfg-vk documentation)
+        /// create a context from already-constructed image/semaphore wrappers.
+        /// Used by both the fd-based and the handle-based openContext paths.
         ContextImpl(const InstanceImpl& instance,
-            std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
+            std::pair<vk::Image, vk::Image> sourceImages,
+            std::vector<vk::Image> destImages,
+            vk::TimelineSemaphore syncSemaphore,
             VkExtent2D extent, bool hdr, float flow, bool perf);
 
         /// schedule frames
@@ -110,7 +118,7 @@ namespace lsfgvk::backend {
         std::vector<vk::Image> destImages;
         vk::Image blackImage;
 
-        vk::TimelineSemaphore syncSemaphore; // imported
+        vk::TimelineSemaphore syncSemaphore; // imported or adopted
         vk::TimelineSemaphore prepassSemaphore;
         size_t idx{1};
         size_t fidx{0}; // real frame index
@@ -135,6 +143,15 @@ namespace lsfgvk::backend {
         };
         std::vector<Pass> passes;
     };
+}
+
+Instance::Instance(
+        const vk::Vulkan& sharedVulkan,
+        const std::filesystem::path& shaderDllPath,
+        bool allowLowPrecision) {
+    this->m_impl = std::make_unique<InstanceImpl>(
+        sharedVulkan, shaderDllPath, allowLowPrecision
+    );
 }
 
 Instance::Instance(
@@ -192,6 +209,15 @@ Instance::Instance(
 }
 
 namespace {
+    // forward declarations — definitions live further down in the file
+    std::pair<vk::Image, vk::Image> importImages(const vk::Vulkan& vk,
+        const std::pair<int, int>& sourceFds,
+        VkExtent2D extent, VkFormat format);
+    std::vector<vk::Image> importImages(const vk::Vulkan& vk,
+        const std::vector<int>& destFds,
+        VkExtent2D extent, VkFormat format);
+    vk::TimelineSemaphore importTimelineSemaphore(const vk::Vulkan& vk, int syncFd);
+
     /// find the cache file path
     std::filesystem::path findCacheFilePath() {
         const char* xdgCacheHome = std::getenv("XDG_CACHE_HOME");
@@ -264,21 +290,70 @@ namespace {
 InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision)
-        : vk(createVulkanInstance(selectPhysicalDevice)),
-        shaders(createShaderRegistry(this->vk, shaderDllPath,
-            allowLowPrecision && vk.supportsFP16())) {
+        : ownedVk(createVulkanInstance(selectPhysicalDevice)),
+          vkPtr(&*this->ownedVk),
+          shaders(createShaderRegistry(*this->ownedVk, shaderDllPath,
+              allowLowPrecision && this->ownedVk->supportsFP16())) {
 #ifdef LSFGVK_TESTING_RENDERDOC
     this->renderdoc = loadRenderDocIntegration();
 #endif
-    vk.persistPipelineCache(); // will silently fail
+    this->ownedVk->persistPipelineCache(); // will silently fail
+}
+
+InstanceImpl::InstanceImpl(const vk::Vulkan& sharedVk,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision)
+        : ownedVk(std::nullopt),
+          vkPtr(&sharedVk),
+          shaders(createShaderRegistry(
+              const_cast<vk::Vulkan&>(sharedVk), shaderDllPath,
+              allowLowPrecision && sharedVk.supportsFP16())) {
+#ifdef LSFGVK_TESTING_RENDERDOC
+    this->renderdoc = loadRenderDocIntegration();
+#endif
+    // pipeline cache lifetime belongs to the caller in the shared path
 }
 
 Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<int>& destFds,
         int syncFd, uint32_t width, uint32_t height,
         bool hdr, float flow, bool perf) {
     const VkExtent2D extent{ width, height };
+    const VkFormat format = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    const auto& vk = this->m_impl->getVulkan();
+
+    auto sourceImgs = importImages(vk, sourceFds, extent, format);
+    auto destImgs = importImages(vk, destFds, extent, format);
+    auto syncSem = importTimelineSemaphore(vk, syncFd);
+
     return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
-        sourceFds, destFds, syncFd,
+        std::move(sourceImgs), std::move(destImgs), std::move(syncSem),
+        extent, hdr, flow, perf
+    )).get();
+}
+
+Context& Instance::openContext(std::pair<VkImage, VkImage> sourceImages,
+        const std::vector<VkImage>& destImages,
+        VkSemaphore syncSemaphore,
+        uint32_t width, uint32_t height,
+        bool hdr, float flow, bool perf) {
+    const VkExtent2D extent{ width, height };
+    const VkFormat format = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    const auto& vk = this->m_impl->getVulkan();
+
+    std::pair<vk::Image, vk::Image> sourceImgs{
+        vk::Image(vk, sourceImages.first, extent, format),
+        vk::Image(vk, sourceImages.second, extent, format),
+    };
+
+    std::vector<vk::Image> destImgs;
+    destImgs.reserve(destImages.size());
+    for (auto handle : destImages)
+        destImgs.emplace_back(vk, handle, extent, format);
+
+    vk::TimelineSemaphore syncSem(vk, syncSemaphore);
+
+    return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
+        std::move(sourceImgs), std::move(destImgs), std::move(syncSem),
         extent, hdr, flow, perf
     )).get();
 }
@@ -337,7 +412,7 @@ namespace {
     /// create prepass semaphores
     vk::TimelineSemaphore createPrepassSemaphore(const vk::Vulkan& vk) {
         try {
-            return{vk, 0};
+            return{vk, uint32_t{0}};
         } catch (const std::exception& e) {
             throw backend::error("Unable to create prepass semaphore", e);
         }
@@ -400,18 +475,18 @@ namespace {
 }
 
 ContextImpl::ContextImpl(const InstanceImpl& instance,
-            std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
+            std::pair<vk::Image, vk::Image> sourceImagesIn,
+            std::vector<vk::Image> destImagesIn,
+            vk::TimelineSemaphore syncSemaphoreIn,
             VkExtent2D extent, bool hdr, float flow, bool perf) :
-        sourceImages(importImages(instance.getVulkan(), sourceFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
-        destImages(importImages(instance.getVulkan(), destFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+        sourceImages(std::move(sourceImagesIn)),
+        destImages(std::move(destImagesIn)),
         blackImage(createBlackImage(instance.getVulkan())),
-        syncSemaphore(importTimelineSemaphore(instance.getVulkan(), syncFd)),
+        syncSemaphore(std::move(syncSemaphoreIn)),
         prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
-        cmdbufs(createCommandBuffers(instance.getVulkan(), destFds.size() + 1)),
+        cmdbufs(createCommandBuffers(instance.getVulkan(), destImages.size() + 1)),
         cmdbufFence(instance.getVulkan()),
-        ctx(createCtx(instance, extent, hdr, flow, perf, destFds.size())),
+        ctx(createCtx(instance, extent, hdr, flow, perf, destImages.size())),
         mipmaps(ctx, sourceImages),
         alpha0{
             Alpha0(ctx, mipmaps.getImages().at(0)),
@@ -653,8 +728,12 @@ namespace {
 InstanceImpl::~InstanceImpl() {
     if (!leaking) return;
 
+    // only the owning path has a vk::Vulkan we control; the shared path
+    // adopts the caller's instance so leaking it is up to them.
+    if (!this->ownedVk.has_value()) return;
+
     try {
-        new vk::Vulkan(std::move(this->vk));
+        new vk::Vulkan(std::move(*this->ownedVk));
     } catch (...) {
         std::cerr << "lsfg-vk: failed to leak Vulkan instance\n";
     }

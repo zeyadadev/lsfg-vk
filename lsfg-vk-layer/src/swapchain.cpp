@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -73,30 +74,44 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     const VkExtent2D extent = this->info.extent;
     const bool hdr = this->info.format > 57;
 
-    std::vector<int> sourceFds(2);
-    std::vector<int> destinationFds(this->profile.multiplier - 1);
+    // single-device path: backend shares the layer's VkDevice, so bridge
+    // images and the sync semaphore are exchanged as Vulkan handles instead
+    // of file descriptors. Source images need SAMPLED|STORAGE on the
+    // backend side and TRANSFER_DST on the layer side; dest images need
+    // SAMPLED|STORAGE (backend writes) and TRANSFER_SRC (layer reads).
+    const VkFormat format = hdr
+        ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+    constexpr VkImageUsageFlags sourceUsage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT
+        | VK_IMAGE_USAGE_SAMPLED_BIT
+        | VK_IMAGE_USAGE_STORAGE_BIT;
+    constexpr VkImageUsageFlags destUsage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+        | VK_IMAGE_USAGE_SAMPLED_BIT
+        | VK_IMAGE_USAGE_STORAGE_BIT;
 
-    this->sourceImages.reserve(sourceFds.size());
-    for (int& fd : sourceFds)
-        this->sourceImages.emplace_back(vk,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
+    this->sourceImages.reserve(2);
+    for (size_t i = 0; i < 2; ++i)
+        this->sourceImages.emplace_back(vk, extent, format, sourceUsage);
 
-    this->destinationImages.reserve(destinationFds.size());
-    for (int& fd : destinationFds)
-        this->destinationImages.emplace_back(vk,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
+    this->destinationImages.reserve(this->profile.multiplier - 1);
+    for (size_t i = 0; i + 1 < this->profile.multiplier; ++i)
+        this->destinationImages.emplace_back(vk, extent, format, destUsage);
 
-    int syncFd{};
-    this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
+    this->syncSemaphore.emplace(vk, 0);
+
+    std::vector<VkImage> destHandles;
+    destHandles.reserve(this->destinationImages.size());
+    for (const auto& img : this->destinationImages)
+        destHandles.push_back(img.handle());
 
     try {
         this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
             new ls::R<backend::Context>(backend.openContext(
-                { sourceFds.at(0), sourceFds.at(1) }, destinationFds, syncFd,
+                { this->sourceImages.at(0).handle(),
+                  this->sourceImages.at(1).handle() },
+                destHandles,
+                this->syncSemaphore->handle(),
                 extent.width, extent.height,
                 hdr, 1.0F / this->profile.flow_scale, this->profile.performance_mode
             )),
@@ -106,6 +121,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
         );
 
         backend::makeLeaking(); // don't worry about it :3
+        std::cerr << "lsfg-vk: single-device swapchain context created ("
+                  << this->sourceImages.size() << " source + "
+                  << this->destinationImages.size() << " dest images, "
+                  << extent.width << "x" << extent.height << ")\n";
     } catch (const std::exception& e) {
         throw ls::error("failed to create swapchain context", e);
     }
@@ -134,13 +153,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         const std::vector<VkSemaphore>& semaphores) {
     const auto& swapchainImage = this->info.images.at(imageIdx);
     const auto& sourceImage = this->sourceImages.at(this->fidx % 2);
-
-    // schedule frame generation
-    try {
-        this->instance.get().scheduleFrames(this->ctx.get());
-    } catch (const std::exception& e) {
-        throw ls::error("failed to schedule frames", e);
-    }
 
     // update present mode when not using pacing
     if (this->profile.pacing == ls::Pacing::None) {
@@ -201,6 +213,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         semaphores, VK_NULL_HANDLE, 0,
         {}, this->syncSemaphore->handle(), this->idx++
     );
+
+    // schedule frame generation AFTER the layer's signal submit. With a
+    // single-device backend, both submits land on the same queue, so we
+    // must signal the timeline first — otherwise the backend's wait
+    // submission blocks the queue before the layer can signal it.
+    try {
+        this->instance.get().scheduleFrames(this->ctx.get());
+    } catch (const std::exception& e) {
+        throw ls::error("failed to schedule frames", e);
+    }
 
     for (size_t i = 0; i < this->destinationImages.size(); i++) {
         auto& pcs = this->postCopySemaphores.at(this->idx % this->postCopySemaphores.size());

@@ -24,6 +24,14 @@ namespace vk {
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt);
 
+        /// adopt an externally-created timeline VkSemaphore (non-owning).
+        /// The semaphore is wrapped but NOT destroyed by this object. Used
+        /// to share a single-device semaphore between the layer and the
+        /// backend without exporting a file descriptor.
+        /// @param vk the vulkan instance
+        /// @param adopted the pre-existing timeline VkSemaphore to adopt
+        TimelineSemaphore(const vk::Vulkan& vk, VkSemaphore adopted);
+
         /// signal the timeline semaphore
         /// @param vk the vulkan instance
         /// @param value the value to signal to
