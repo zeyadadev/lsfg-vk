@@ -16,6 +16,11 @@ const std::vector<const char*> requiredExtensions = {
     "VK_KHR_external_memory_fd",
     "VK_KHR_external_semaphore_fd",
     "VK_EXT_robustness2",
+#ifdef LSFGVK_USE_DMA_HEAP
+    "VK_EXT_external_memory_dma_buf",
+    "VK_EXT_image_drm_format_modifier",
+    "VK_EXT_queue_family_foreign",
+#endif
 };
 
 Device::Device(const Instance& instance, uint64_t deviceUUID) {

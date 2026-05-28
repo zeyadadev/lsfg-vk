@@ -58,6 +58,11 @@ namespace Layer {
         VkPhysicalDevice physicalDevice,
         VkSurfaceKHR surface,
         VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
+    /// Call to the original vkGetPhysicalDeviceExternalSemaphoreProperties function.
+    void ovkGetPhysicalDeviceExternalSemaphoreProperties(
+        VkPhysicalDevice physicalDevice,
+        const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo,
+        VkExternalSemaphoreProperties* pExternalSemaphoreProperties);
 
     /// Call to the original vkCreateSwapchainKHR function.
     VkResult ovkCreateSwapchainKHR(
@@ -131,6 +136,12 @@ namespace Layer {
         VkDevice device,
         VkImage image,
         VkMemoryRequirements* pMemoryRequirements);
+    /// Call to the original vkGetImageSubresourceLayout function.
+    void ovkGetImageSubresourceLayout(
+        VkDevice device,
+        VkImage image,
+        const VkImageSubresource* pSubresource,
+        VkSubresourceLayout* pLayout);
     /// Call to the original vkBindImageMemory function.
     VkResult ovkBindImageMemory(
         VkDevice device,

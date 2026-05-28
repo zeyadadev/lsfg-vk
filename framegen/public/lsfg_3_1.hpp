@@ -9,6 +9,17 @@
 
 namespace LSFG_3_1 {
 
+#ifdef LSFGVK_USE_DMA_HEAP
+    ///
+    /// External (dma_buf-backed) image descriptor passed across the LSFG boundary.
+    ///
+    struct ExternalImage {
+        int fd;                          ///< dma_buf file descriptor (importer takes ownership via dup)
+        uint64_t drmModifier;            ///< DRM format modifier (0 = LINEAR)
+        VkSubresourceLayout planeLayout; ///< plane 0 layout queried on the exporter side
+    };
+#endif
+
     ///
     /// Initialize the LSFG library.
     ///
@@ -39,7 +50,12 @@ namespace LSFG_3_1 {
     ///
     __attribute__((visibility("default")))
     int32_t createContext(
+#ifdef LSFGVK_USE_DMA_HEAP
+        const ExternalImage& in0, const ExternalImage& in1,
+        const std::vector<ExternalImage>& outN,
+#else
         int in0, int in1, const std::vector<int>& outN,
+#endif
         VkExtent2D extent, VkFormat format);
 
     ///
@@ -47,12 +63,16 @@ namespace LSFG_3_1 {
     ///
     /// @param id Unique identifier of the context to present.
     /// @param inSem Semaphore to wait on before starting the generation.
-    /// @param outSem Semaphores to signal once each output image is ready.
+    /// @param semaphoreHandleType External semaphore handle type used for FD exchange.
+    /// @return Semaphores to wait on once each output image is ready.
     ///
     /// @throws LSFG::vulkan_error if the context cannot be presented.
     ///
     __attribute__((visibility("default")))
-    void presentContext(int32_t id, int inSem, const std::vector<int>& outSem);
+    std::vector<int> presentContext(
+        int32_t id,
+        int inSem,
+        VkExternalSemaphoreHandleTypeFlagBits semaphoreHandleType);
 
     ///
     /// Delete an LSFG context.

@@ -25,14 +25,44 @@ namespace Mini {
         Semaphore(VkDevice device);
 
         ///
-        /// Import a semaphore.
+        /// Create a semaphore that can later be exported to a file descriptor.
         ///
         /// @param device Vulkan device
-        /// @param fd File descriptor to import the semaphore from.
+        /// @param handleType External semaphore handle type.
         ///
         /// @throws LSFG::vulkan_error if object creation fails.
         ///
-        Semaphore(VkDevice device, int* fd);
+        [[nodiscard]] static Semaphore createExportable(
+            VkDevice device,
+            VkExternalSemaphoreHandleTypeFlagBits handleType);
+
+        ///
+        /// Import a semaphore from a file descriptor.
+        ///
+        /// @param device Vulkan device
+        /// @param fd File descriptor to import the semaphore from.
+        /// @param handleType External semaphore handle type.
+        ///
+        /// @throws LSFG::vulkan_error if object creation fails.
+        ///
+        [[nodiscard]] static Semaphore import(
+            VkDevice device,
+            int fd,
+            VkExternalSemaphoreHandleTypeFlagBits handleType);
+
+        ///
+        /// Export the semaphore to a file descriptor.
+        ///
+        /// @param device Vulkan device
+        /// @param handleType External semaphore handle type.
+        /// @return Exported file descriptor. For `SYNC_FD`, `-1` is a valid
+        ///         already-signaled sentinel.
+        ///
+        /// @throws LSFG::vulkan_error if object export fails.
+        ///
+        [[nodiscard]] int exportFd(
+            VkDevice device,
+            VkExternalSemaphoreHandleTypeFlagBits handleType) const;
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->semaphore; }

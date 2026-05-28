@@ -21,6 +21,59 @@
 using namespace Hooks;
 
 namespace {
+    size_t clampMultiplierForSwapchain(
+            uint32_t originalMinImageCount,
+            uint32_t actualImageCount,
+            size_t requestedMultiplier) {
+        if (requestedMultiplier <= 1)
+            return 1;
+        if (actualImageCount <= originalMinImageCount)
+            return 1;
+
+        const uint32_t imagesPerExtraFrame = std::max(1U, originalMinImageCount - 1);
+        const uint32_t extraImages = actualImageCount - originalMinImageCount;
+        const size_t maxExtraFrames = extraImages / imagesPerExtraFrame;
+        return 1 + std::min(requestedMultiplier - 1, maxExtraFrames);
+    }
+
+    size_t effectiveMultiplierForSwapchain(
+            uint32_t originalMinImageCount,
+            uint32_t actualImageCount,
+            size_t requestedMultiplier) {
+        const size_t multiplier = clampMultiplierForSwapchain(
+            originalMinImageCount, actualImageCount, requestedMultiplier);
+        if (requestedMultiplier <= 1)
+            return multiplier;
+        return std::max<size_t>(2, multiplier);
+    }
+
+    VkExternalSemaphoreHandleTypeFlagBits pickExternalSemaphoreHandleType(
+            VkPhysicalDevice physicalDevice) {
+        const auto supportsHandleType = [physicalDevice](
+                VkExternalSemaphoreHandleTypeFlagBits handleType) {
+            const VkPhysicalDeviceExternalSemaphoreInfo info{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO,
+                .handleType = handleType,
+            };
+            VkExternalSemaphoreProperties props{
+                .sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
+            };
+            Layer::ovkGetPhysicalDeviceExternalSemaphoreProperties(physicalDevice, &info, &props);
+            const auto required = static_cast<VkExternalSemaphoreFeatureFlags>(
+                VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT
+                | VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT);
+            return (props.externalSemaphoreFeatures & required) == required;
+        };
+
+        if (supportsHandleType(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT))
+            return VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        if (supportsHandleType(VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT))
+            return VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+
+        throw std::runtime_error(
+            "Required external semaphore handle types are not supported. "
+            "Neither OPAQUE_FD nor SYNC_FD can be both exported and imported.");
+    }
 
     ///
     /// Add extensions to the instance create info.
@@ -70,6 +123,11 @@ namespace {
                 "VK_KHR_external_memory_fd",
                 "VK_KHR_external_semaphore",
                 "VK_KHR_external_semaphore_fd"
+#ifdef LSFGVK_USE_DMA_HEAP
+                , "VK_EXT_external_memory_dma_buf"
+                , "VK_EXT_image_drm_format_modifier"
+                , "VK_EXT_queue_family_foreign"
+#endif
             }
         );
         VkDeviceCreateInfo createInfo = *pCreateInfo;
@@ -94,7 +152,8 @@ namespace {
         deviceToInfo.emplace(*pDevice, DeviceInfo {
             .device = *pDevice,
             .physicalDevice = physicalDevice,
-            .queue = Utils::findQueue(*pDevice, physicalDevice, pCreateInfo, VK_QUEUE_GRAPHICS_BIT)
+            .queue = Utils::findQueue(*pDevice, physicalDevice, pCreateInfo, VK_QUEUE_GRAPHICS_BIT),
+            .externalSemaphoreHandleType = pickExternalSemaphoreHandleType(physicalDevice)
         });
         return VK_SUCCESS;
     }
@@ -130,13 +189,18 @@ namespace {
         VkSwapchainCreateInfoKHR createInfo = *pCreateInfo;
         const auto maxImages = Utils::getMaxImageCount(
             deviceInfo.physicalDevice, pCreateInfo->surface);
-        createInfo.minImageCount = createInfo.minImageCount + 1
-            + static_cast<uint32_t>(deviceInfo.queue.first);
+        const size_t requestedMultiplier = effectiveMultiplierForSwapchain(
+            pCreateInfo->minImageCount, maxImages, Config::activeConf.multiplier);
+        if (requestedMultiplier > 1) {
+            createInfo.minImageCount = createInfo.minImageCount
+                + static_cast<uint32_t>(requestedMultiplier);
+        }
         if (createInfo.minImageCount > maxImages) {
+            const auto requestedImageCount = createInfo.minImageCount;
             createInfo.minImageCount = maxImages;
             Utils::logLimitN("swapCount", 10,
                 "Requested image count (" +
-                    std::to_string(pCreateInfo->minImageCount) + ") "
+                    std::to_string(requestedImageCount) + ") "
                 "exceeds maximum allowed (" +
                     std::to_string(maxImages) + "). "
                 "Continuing with maximum allowed image count. "
@@ -178,11 +242,20 @@ namespace {
             if (res != VK_SUCCESS)
                 throw LSFG::vulkan_error(res, "Failed to get swapchain images");
 
+            const size_t effectiveMultiplier = effectiveMultiplierForSwapchain(
+                pCreateInfo->minImageCount, imageCount, Config::activeConf.multiplier);
+            if (effectiveMultiplier != Config::activeConf.multiplier) {
+                Utils::logLimitN("swapCount", 10,
+                    "Clamping frame-generation multiplier from "
+                    + std::to_string(Config::activeConf.multiplier) + "x to "
+                    + std::to_string(effectiveMultiplier) + "x for this swapchain.");
+            }
+
             // create swapchain context
             swapchainToDeviceTable.emplace(*pSwapchain, device);
             swapchains.emplace(*pSwapchain, LsContext(
                 deviceInfo, *pSwapchain, pCreateInfo->imageExtent,
-                swapchainImages
+                swapchainImages, effectiveMultiplier
             ));
 
             std::cerr << "lsfg-vk: Swapchain context " <<

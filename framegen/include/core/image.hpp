@@ -42,11 +42,17 @@ namespace LSFG::Core {
         /// @param usage Usage flags for the image
         /// @param aspectFlags Aspect flags for the image view
         /// @param fd File descriptor for shared memory.
+        /// @param drmModifier DRM format modifier (dma-heap path only, 0 = LINEAR).
+        /// @param planeLayout Plane 0 layout (dma-heap path only).
         ///
         /// @throws LSFG::vulkan_error if object creation fails.
         ///
         Image(const Core::Device& device, VkExtent2D extent, VkFormat format,
-            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int fd);
+            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int fd
+#ifdef LSFGVK_USE_DMA_HEAP
+            , uint64_t drmModifier, VkSubresourceLayout planeLayout
+#endif
+        );
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->image; }

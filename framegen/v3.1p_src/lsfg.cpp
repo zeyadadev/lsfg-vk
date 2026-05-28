@@ -53,7 +53,12 @@ void LSFG_3_1P::initialize(uint64_t deviceUUID,
 }
 
 int32_t LSFG_3_1P::createContext(
+#ifdef LSFGVK_USE_DMA_HEAP
+        const ExternalImage& in0, const ExternalImage& in1,
+        const std::vector<ExternalImage>& outN,
+#else
         int in0, int in1, const std::vector<int>& outN,
+#endif
         VkExtent2D extent, VkFormat format) {
     if (!instance.has_value() || !device.has_value())
         throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED, "LSFG not initialized");
@@ -63,7 +68,10 @@ int32_t LSFG_3_1P::createContext(
     return id;
 }
 
-void LSFG_3_1P::presentContext(int32_t id, int inSem, const std::vector<int>& outSem) {
+std::vector<int> LSFG_3_1P::presentContext(
+        int32_t id,
+        int inSem,
+        VkExternalSemaphoreHandleTypeFlagBits semaphoreHandleType) {
     if (!instance.has_value() || !device.has_value())
         throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED, "LSFG not initialized");
 
@@ -71,7 +79,7 @@ void LSFG_3_1P::presentContext(int32_t id, int inSem, const std::vector<int>& ou
     if (it == contexts.end())
         throw LSFG::vulkan_error(VK_ERROR_UNKNOWN, "Context not found");
 
-    it->second.present(*device, inSem, outSem);
+    return it->second.present(*device, inSem, semaphoreHandleType);
 }
 
 void LSFG_3_1P::deleteContext(int32_t id) {

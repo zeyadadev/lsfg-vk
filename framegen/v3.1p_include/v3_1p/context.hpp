@@ -14,6 +14,8 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "lsfg_3_1p.hpp"
+
 #include <vector>
 #include <cstdint>
 #include <array>
@@ -37,19 +39,26 @@ namespace LSFG_3_1P {
         /// @throws LSFG::vulkan_error if the context fails to initialize.
         ///
         Context(Vulkan& vk,
+#ifdef LSFGVK_USE_DMA_HEAP
+            const ExternalImage& in0, const ExternalImage& in1,
+            const std::vector<ExternalImage>& outN,
+#else
             int in0, int in1, const std::vector<int>& outN,
+#endif
             VkExtent2D extent, VkFormat format);
 
         ///
         /// Present on the context.
         ///
         /// @param inSem Semaphore to wait on before starting the generation.
-        /// @param outSem Semaphores to signal after each generation is done.
+        /// @param semaphoreHandleType External semaphore handle type used for FD exchange.
         ///
         /// @throws LSFG::vulkan_error if the context fails to present.
         ///
-        void present(Vulkan& vk,
-            int inSem, const std::vector<int>& outSem);
+        [[nodiscard]] std::vector<int> present(
+            Vulkan& vk,
+            int inSem,
+            VkExternalSemaphoreHandleTypeFlagBits semaphoreHandleType);
 
         // Trivially copyable, moveable and destructible
         Context(const Context&) = default;

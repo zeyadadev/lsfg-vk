@@ -25,11 +25,13 @@ public:
     /// @param swapchain The Vulkan swapchain to use.
     /// @param extent The extent of the swapchain images.
     /// @param swapchainImages The swapchain images to use.
+    /// @param multiplier Effective frame-generation multiplier for this swapchain.
     ///
     /// @throws LSFG::vulkan_error if any Vulkan call fails.
     ///
     LsContext(const Hooks::DeviceInfo& info, VkSwapchainKHR swapchain,
-        VkExtent2D extent, const std::vector<VkImage>& swapchainImages);
+        VkExtent2D extent, const std::vector<VkImage>& swapchainImages,
+        size_t multiplier);
 
     ///
     /// Custom present logic.
@@ -56,6 +58,7 @@ private:
     VkSwapchainKHR swapchain;
     std::vector<VkImage> swapchainImages;
     VkExtent2D extent;
+    size_t multiplier{1};
 
     std::shared_ptr<int32_t> lsfgCtxId; // lsfg context id
     Mini::Image frame_0, frame_1; // frames shared with lsfg. write to frame_0 when fc % 2 == 0

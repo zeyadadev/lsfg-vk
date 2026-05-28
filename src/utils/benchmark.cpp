@@ -23,11 +23,9 @@ void Benchmark::run(uint32_t width, uint32_t height) {
     const auto& conf = Config::activeConf;
 
     auto* lsfgInitialize = LSFG_3_1::initialize;
-    auto* lsfgCreateContext = LSFG_3_1::createContext;
     auto* lsfgPresentContext = LSFG_3_1::presentContext;
     if (conf.performance) {
         lsfgInitialize = LSFG_3_1P::initialize;
-        lsfgCreateContext = LSFG_3_1P::createContext;
         lsfgPresentContext = LSFG_3_1P::presentContext;
     }
 
@@ -48,10 +46,22 @@ void Benchmark::run(uint32_t width, uint32_t height) {
             return spirv;
         }
     );
-    const int32_t ctx = lsfgCreateContext(-1, -1, {},
-        { .width = width, .height = height },
-        conf.hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
-    );
+    const VkExtent2D ext{ .width = width, .height = height };
+    const VkFormat fmt = conf.hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+#ifdef LSFGVK_USE_DMA_HEAP
+    int32_t ctx{};
+    if (conf.performance) {
+        const LSFG_3_1P::ExternalImage none{ -1, 0, {} };
+        ctx = LSFG_3_1P::createContext(none, none, {}, ext, fmt);
+    } else {
+        const LSFG_3_1::ExternalImage none{ -1, 0, {} };
+        ctx = LSFG_3_1::createContext(none, none, {}, ext, fmt);
+    }
+#else
+    auto* lsfgCreateContext = LSFG_3_1::createContext;
+    if (conf.performance) lsfgCreateContext = LSFG_3_1P::createContext;
+    const int32_t ctx = lsfgCreateContext(-1, -1, {}, ext, fmt);
+#endif
 
     unsetenv("DISABLE_LSFG"); // NOLINT
 

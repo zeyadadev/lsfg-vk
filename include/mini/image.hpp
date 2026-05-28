@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include <cstdint>
 #include <memory>
 
 namespace Mini {
@@ -25,11 +26,14 @@ namespace Mini {
         /// @param usage Usage flags for the image
         /// @param aspectFlags Aspect flags for the image view
         /// @param fd Pointer to an integer where the file descriptor will be stored.
+        /// @param drmModifier Optional out-param: DRM format modifier (dma-heap path only).
+        /// @param planeLayout Optional out-param: plane 0 layout (dma-heap path only).
         ///
         /// @throws LSFG::vulkan_error if object creation fails.
         ///
         Image(VkDevice device, VkPhysicalDevice physicalDevice, VkExtent2D extent, VkFormat format,
-            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int* fd);
+            VkImageUsageFlags usage, VkImageAspectFlags aspectFlags, int* fd,
+            uint64_t* drmModifier = nullptr, VkSubresourceLayout* planeLayout = nullptr);
 
         /// Get the Vulkan handle.
         [[nodiscard]] auto handle() const { return *this->image; }

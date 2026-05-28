@@ -12,6 +12,22 @@
 
 using namespace LSFG::Core;
 
+namespace {
+    std::shared_ptr<VkSemaphore> wrapSemaphore(VkDevice device, VkSemaphore semaphoreHandle) {
+        return std::shared_ptr<VkSemaphore>(
+            new VkSemaphore(semaphoreHandle),
+            [dev = device](VkSemaphore* semaphore) {
+                vkDestroySemaphore(dev, *semaphore, nullptr);
+            }
+        );
+    }
+
+    bool isValidFd(int fd, VkExternalSemaphoreHandleTypeFlagBits handleType) {
+        return fd >= 0
+            || (handleType == VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT && fd == -1);
+    }
+}
+
 Semaphore::Semaphore(const Core::Device& device, std::optional<uint32_t> initial) {
     // create semaphore
     const VkSemaphoreTypeCreateInfo typeInfo{
@@ -30,19 +46,15 @@ Semaphore::Semaphore(const Core::Device& device, std::optional<uint32_t> initial
 
     // store semaphore in shared ptr
     this->isTimeline = initial.has_value();
-    this->semaphore = std::shared_ptr<VkSemaphore>(
-        new VkSemaphore(semaphoreHandle),
-        [dev = device.handle()](VkSemaphore* semaphoreHandle) {
-            vkDestroySemaphore(dev, *semaphoreHandle, nullptr);
-        }
-    );
+    this->semaphore = wrapSemaphore(device.handle(), semaphoreHandle);
 }
 
-Semaphore::Semaphore(const Core::Device& device, int fd) {
-    // create semaphore
+Semaphore Semaphore::createExportable(
+        const Core::Device& device,
+        VkExternalSemaphoreHandleTypeFlagBits handleType) {
     const VkExportSemaphoreCreateInfo exportInfo{
         .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
-        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
+        .handleTypes = static_cast<VkExternalSemaphoreHandleTypeFlags>(handleType)
     };
     const VkSemaphoreCreateInfo desc{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -53,28 +65,71 @@ Semaphore::Semaphore(const Core::Device& device, int fd) {
     if (res != VK_SUCCESS || semaphoreHandle == VK_NULL_HANDLE)
         throw LSFG::vulkan_error(res, "Unable to create semaphore");
 
-    // import semaphore from fd
+    Semaphore semaphore;
+    semaphore.isTimeline = false;
+    semaphore.semaphore = wrapSemaphore(device.handle(), semaphoreHandle);
+    return semaphore;
+}
+
+Semaphore Semaphore::import(
+        const Core::Device& device,
+        int fd,
+        VkExternalSemaphoreHandleTypeFlagBits handleType) {
+    const VkSemaphoreCreateInfo desc{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    VkSemaphore semaphoreHandle{};
+    auto res = vkCreateSemaphore(device.handle(), &desc, nullptr, &semaphoreHandle);
+    if (res != VK_SUCCESS || semaphoreHandle == VK_NULL_HANDLE)
+        throw LSFG::vulkan_error(res, "Unable to create semaphore");
+
     auto vkImportSemaphoreFdKHR = reinterpret_cast<PFN_vkImportSemaphoreFdKHR>(
         vkGetDeviceProcAddr(device.handle(), "vkImportSemaphoreFdKHR"));
+    if (!vkImportSemaphoreFdKHR) {
+        vkDestroySemaphore(device.handle(), semaphoreHandle, nullptr);
+        throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED,
+            "Unable to load vkImportSemaphoreFdKHR");
+    }
 
     const VkImportSemaphoreFdInfoKHR importInfo{
         .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
         .semaphore = semaphoreHandle,
-        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+        .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+        .handleType = handleType,
         .fd = fd // closes the fd
     };
     res = vkImportSemaphoreFdKHR(device.handle(), &importInfo);
-    if (res != VK_SUCCESS)
+    if (res != VK_SUCCESS) {
+        vkDestroySemaphore(device.handle(), semaphoreHandle, nullptr);
         throw LSFG::vulkan_error(res, "Unable to import semaphore from fd");
+    }
 
-    // store semaphore in shared ptr
-    this->isTimeline = false;
-    this->semaphore = std::shared_ptr<VkSemaphore>(
-        new VkSemaphore(semaphoreHandle),
-        [dev = device.handle()](VkSemaphore* semaphoreHandle) {
-            vkDestroySemaphore(dev, *semaphoreHandle, nullptr);
-        }
-    );
+    Semaphore semaphore;
+    semaphore.isTimeline = false;
+    semaphore.semaphore = wrapSemaphore(device.handle(), semaphoreHandle);
+    return semaphore;
+}
+
+int Semaphore::exportFd(
+        const Core::Device& device,
+        VkExternalSemaphoreHandleTypeFlagBits handleType) const {
+    auto vkGetSemaphoreFdKHR = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+        vkGetDeviceProcAddr(device.handle(), "vkGetSemaphoreFdKHR"));
+    if (!vkGetSemaphoreFdKHR)
+        throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED,
+            "Unable to load vkGetSemaphoreFdKHR");
+
+    int fd{-1};
+    const VkSemaphoreGetFdInfoKHR fdInfo{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+        .semaphore = this->handle(),
+        .handleType = handleType,
+    };
+    const auto res = vkGetSemaphoreFdKHR(device.handle(), &fdInfo, &fd);
+    if (res != VK_SUCCESS || !isValidFd(fd, handleType))
+        throw LSFG::vulkan_error(res, "Unable to export semaphore to fd");
+
+    return fd;
 }
 
 void Semaphore::signal(const Core::Device& device, uint64_t value) const {

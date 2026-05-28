@@ -30,14 +30,44 @@ namespace LSFG::Core {
         Semaphore(const Core::Device& device, std::optional<uint32_t> initial = std::nullopt);
 
         ///
+        /// Create a semaphore that can later be exported to a file descriptor.
+        ///
+        /// @param device Vulkan device
+        /// @param handleType External semaphore handle type.
+        ///
+        /// @throws LSFG::vulkan_error if object creation fails.
+        ///
+        [[nodiscard]] static Semaphore createExportable(
+            const Core::Device& device,
+            VkExternalSemaphoreHandleTypeFlagBits handleType);
+
+        ///
         /// Import a semaphore.
         ///
         /// @param device Vulkan device
         /// @param fd File descriptor to import the semaphore from.
+        /// @param handleType External semaphore handle type.
         ///
         /// @throws LSFG::vulkan_error if object creation fails.
         ///
-        Semaphore(const Core::Device& device, int fd);
+        [[nodiscard]] static Semaphore import(
+            const Core::Device& device,
+            int fd,
+            VkExternalSemaphoreHandleTypeFlagBits handleType);
+
+        ///
+        /// Export the semaphore to a file descriptor.
+        ///
+        /// @param device Vulkan device
+        /// @param handleType External semaphore handle type.
+        /// @return Exported file descriptor. For `SYNC_FD`, `-1` is a valid
+        ///         already-signaled sentinel.
+        ///
+        /// @throws LSFG::vulkan_error if object export fails.
+        ///
+        [[nodiscard]] int exportFd(
+            const Core::Device& device,
+            VkExternalSemaphoreHandleTypeFlagBits handleType) const;
 
         ///
         /// Signal the semaphore to a specific value.

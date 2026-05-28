@@ -28,6 +28,7 @@ namespace {
     PFN_vkGetPhysicalDeviceMemoryProperties next_vkGetPhysicalDeviceMemoryProperties{};
     PFN_vkGetPhysicalDeviceProperties next_vkGetPhysicalDeviceProperties{};
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR next_vkGetPhysicalDeviceSurfaceCapabilitiesKHR{};
+    PFN_vkGetPhysicalDeviceExternalSemaphoreProperties next_vkGetPhysicalDeviceExternalSemaphoreProperties{};
 
     PFN_vkCreateSwapchainKHR  next_vkCreateSwapchainKHR{};
     PFN_vkQueuePresentKHR     next_vkQueuePresentKHR{};
@@ -42,6 +43,7 @@ namespace {
     PFN_vkCreateImage  next_vkCreateImage{};
     PFN_vkDestroyImage next_vkDestroyImage{};
     PFN_vkGetImageMemoryRequirements next_vkGetImageMemoryRequirements{};
+    PFN_vkGetImageSubresourceLayout next_vkGetImageSubresourceLayout{};
     PFN_vkBindImageMemory next_vkBindImageMemory{};
     PFN_vkAllocateMemory  next_vkAllocateMemory{};
     PFN_vkFreeMemory next_vkFreeMemory{};
@@ -134,6 +136,9 @@ namespace {
                 "vkGetPhysicalDeviceProperties", &next_vkGetPhysicalDeviceProperties);
             success &= initInstanceFunc(*pInstance,
                 "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", &next_vkGetPhysicalDeviceSurfaceCapabilitiesKHR);
+            success &= initInstanceFunc(*pInstance,
+                "vkGetPhysicalDeviceExternalSemaphoreProperties",
+                &next_vkGetPhysicalDeviceExternalSemaphoreProperties);
             if (!success)
                 throw LSFG::vulkan_error(VK_ERROR_INITIALIZATION_FAILED,
                     "Failed to get instance function pointers");
@@ -212,6 +217,7 @@ namespace {
             success &= initDeviceFunc(*pDevice, "vkCreateImage", &next_vkCreateImage);
             success &= initDeviceFunc(*pDevice, "vkDestroyImage", &next_vkDestroyImage);
             success &= initDeviceFunc(*pDevice, "vkGetImageMemoryRequirements", &next_vkGetImageMemoryRequirements);
+            success &= initDeviceFunc(*pDevice, "vkGetImageSubresourceLayout", &next_vkGetImageSubresourceLayout);
             success &= initDeviceFunc(*pDevice, "vkBindImageMemory", &next_vkBindImageMemory);
             success &= initDeviceFunc(*pDevice, "vkGetMemoryFdKHR", &next_vkGetMemoryFdKHR);
             success &= initDeviceFunc(*pDevice, "vkAllocateMemory", &next_vkAllocateMemory);
@@ -345,6 +351,13 @@ namespace Layer {
             VkSurfaceCapabilitiesKHR* pSurfaceCapabilities) {
         return next_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, pSurfaceCapabilities);
     }
+    void ovkGetPhysicalDeviceExternalSemaphoreProperties(
+            VkPhysicalDevice physicalDevice,
+            const VkPhysicalDeviceExternalSemaphoreInfo* pExternalSemaphoreInfo,
+            VkExternalSemaphoreProperties* pExternalSemaphoreProperties) {
+        next_vkGetPhysicalDeviceExternalSemaphoreProperties(
+            physicalDevice, pExternalSemaphoreInfo, pExternalSemaphoreProperties);
+    }
 
     VkResult ovkCreateSwapchainKHR(
             VkDevice device,
@@ -430,6 +443,13 @@ namespace Layer {
             VkImage image,
             VkMemoryRequirements* pMemoryRequirements) {
         next_vkGetImageMemoryRequirements(device, image, pMemoryRequirements);
+    }
+    void ovkGetImageSubresourceLayout(
+            VkDevice device,
+            VkImage image,
+            const VkImageSubresource* pSubresource,
+            VkSubresourceLayout* pLayout) {
+        next_vkGetImageSubresourceLayout(device, image, pSubresource, pLayout);
     }
     VkResult ovkBindImageMemory(
             VkDevice device,

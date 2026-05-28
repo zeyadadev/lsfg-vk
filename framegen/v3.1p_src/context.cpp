@@ -15,15 +15,29 @@ using namespace LSFG;
 using namespace LSFG_3_1P;
 
 Context::Context(Vulkan& vk,
+#ifdef LSFGVK_USE_DMA_HEAP
+        const LSFG_3_1P::ExternalImage& in0, const LSFG_3_1P::ExternalImage& in1,
+        const std::vector<LSFG_3_1P::ExternalImage>& outN,
+#else
         int in0, int in1, const std::vector<int>& outN,
+#endif
         VkExtent2D extent, VkFormat format) {
     // import input images
+#ifdef LSFGVK_USE_DMA_HEAP
+    this->inImg_0 = Core::Image(vk.device, extent, format,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, in0.fd, in0.drmModifier, in0.planeLayout);
+    this->inImg_1 = Core::Image(vk.device, extent, format,
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, in1.fd, in1.drmModifier, in1.planeLayout);
+#else
     this->inImg_0 = Core::Image(vk.device, extent, format,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, in0);
     this->inImg_1 = Core::Image(vk.device, extent, format,
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT, in1);
+#endif
 
     // prepare render data
     for (size_t i = 0; i < 8; i++) {
@@ -61,9 +75,12 @@ Context::Context(Vulkan& vk,
         outN, format);
 }
 
-void Context::present(Vulkan& vk,
-        int inSem, const std::vector<int>& outSem) {
+std::vector<int> Context::present(
+        Vulkan& vk,
+        int inSem,
+        VkExternalSemaphoreHandleTypeFlagBits semaphoreHandleType) {
     auto& data = this->data.at(this->frameIdx % 8);
+    std::vector<int> outSemFds(vk.generationCount, -1);
 
     // 3. wait for completion of previous frame in this slot
     if (data.shouldWait)
@@ -73,7 +90,8 @@ void Context::present(Vulkan& vk,
     data.shouldWait = true;
 
     // 1. create mipmaps and process input image
-    if (inSem >= 0) data.inSemaphore = Core::Semaphore(vk.device, inSem);
+    if (inSem >= 0)
+        data.inSemaphore = Core::Semaphore::import(vk.device, inSem, semaphoreHandleType);
     for (size_t i = 0; i < vk.generationCount; i++)
         data.internalSemaphores.at(i) = Core::Semaphore(vk.device);
 
@@ -96,7 +114,7 @@ void Context::present(Vulkan& vk,
     for (size_t pass = 0; pass < vk.generationCount; pass++) {
         auto& internalSemaphore = data.internalSemaphores.at(pass);
         auto& outSemaphore = data.outSemaphores.at(pass);
-        if (inSem >= 0) outSemaphore = Core::Semaphore(vk.device, outSem.empty() ? -1 : outSem.at(pass));
+        outSemaphore = Core::Semaphore::createExportable(vk.device, semaphoreHandleType);
         auto& completionFence = data.completionFences.at(pass);
         completionFence = Core::Fence(vk.device);
 
@@ -112,12 +130,12 @@ void Context::present(Vulkan& vk,
         this->generate.Dispatch(buf2, this->frameIdx, pass);
 
         buf2.end();
-        std::vector<Core::Semaphore> signals = { outSemaphore };
-        if (inSem < 0) signals.clear();
         buf2.submit(vk.device.getComputeQueue(), completionFence,
             { internalSemaphore }, std::nullopt,
-            signals, std::nullopt);
+            { outSemaphore }, std::nullopt);
+        outSemFds.at(pass) = outSemaphore.exportFd(vk.device, semaphoreHandleType);
     }
 
     this->frameIdx++;
+    return outSemFds;
 }

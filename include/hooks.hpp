@@ -14,6 +14,7 @@ namespace Hooks {
         VkDevice device;
         VkPhysicalDevice physicalDevice;
         std::pair<uint32_t, VkQueue> queue; // graphics family
+        VkExternalSemaphoreHandleTypeFlagBits externalSemaphoreHandleType;
     };
 
     /// Map of hooked Vulkan functions.

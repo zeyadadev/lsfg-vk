@@ -11,6 +11,8 @@
 
 #include <vulkan/vulkan_core.h>
 
+#include "lsfg_3_1.hpp"
+
 #include <array>
 #include <vector>
 #include <cstdint>
@@ -41,7 +43,12 @@ namespace LSFG_3_1::Shaders {
         Generate(Vulkan& vk,
             Core::Image inImg1, Core::Image inImg2,
             Core::Image inImg3, Core::Image inImg4, Core::Image inImg5,
-            const std::vector<int>& fds, VkFormat format);
+#ifdef LSFGVK_USE_DMA_HEAP
+            const std::vector<LSFG_3_1::ExternalImage>& fds,
+#else
+            const std::vector<int>& fds,
+#endif
+            VkFormat format);
 
         ///
         /// Dispatch the shaderchain.

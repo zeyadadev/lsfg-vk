@@ -4,6 +4,14 @@ set(CMAKE_SKIP_RPATH ON)
 set(CMAKE_C_VISIBILITY_PRESET "hidden")
 set(CMAKE_CXX_VISIBILITY_PRESET "hidden")
 
+# Use the kernel dma-heap (/dev/dma_heap/system) as the external DMA_BUF source
+# and image tiling DRM_FORMAT_MODIFIER_EXT for cross-device sharing. Required on
+# GPU drivers (notably the Arm Mali blob) that don't support OPAQUE_FD export.
+option(LSFGVK_USE_DMA_HEAP "Use dma-heap + DRM format modifier for image sharing" OFF)
+if(LSFGVK_USE_DMA_HEAP)
+    add_compile_definitions(LSFGVK_USE_DMA_HEAP)
+endif()
+
 # subprojects
 add_compile_options(-fPIC
     -Wno-deprecated-declarations
