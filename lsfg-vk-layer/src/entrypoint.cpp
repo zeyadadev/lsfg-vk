@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -36,6 +37,7 @@ namespace {
         vk::VulkanInstanceFuncs funcs;
 
         std::unordered_map<VkDevice, vk::Vulkan> devices;
+        std::unordered_map<VkDevice, PFN_vkSetDeviceLoaderData> loaderDataFuncs;
         std::unordered_map<VkSwapchainKHR, ls::R<vk::Vulkan>> swapchains;
         std::unordered_map<VkSwapchainKHR, SwapchainInfo> swapchainInfos;
     }* instance_info; // NOLINT (global variable)
@@ -161,9 +163,11 @@ namespace {
         }
 
         // create device
+        std::optional<vk::QueueSelection> sameDeviceQueue;
         try {
             VkDeviceCreateInfo newInfo = *info;
-            layer_info->root.modifyDeviceCreateInfo(newInfo,
+            sameDeviceQueue = layer_info->root.modifyDeviceCreateInfo(
+                instance_info->funcs, physdev, newInfo,
                 [=, newInfo = &newInfo]() {
                     auto res = instance_info->funcs.CreateDevice(physdev, newInfo, alloc, device);
                     if (res != VK_SUCCESS)
@@ -177,6 +181,11 @@ namespace {
             return e.error();
         }
 
+        instance_info->loaderDataFuncs.emplace(*device, setLoaderData);
+
+        if (!layer_info->root.active())
+            return VK_SUCCESS;
+
         // create layer instance
         try {
             instance_info->devices.emplace(
@@ -188,6 +197,8 @@ namespace {
                     true, setLoaderData
                 )
             );
+            if (sameDeviceQueue.has_value())
+                layer_info->root.registerSameDeviceQueue(*device, *sameDeviceQueue);
         } catch (const std::exception& e) {
             std::cerr << "lsfg-vk: something went wrong during lsfg-vk initialization:\n";
             std::cerr << "- " << e.what() << '\n';
@@ -202,6 +213,8 @@ namespace {
         auto it = instance_info->devices.find(device);
         if (it != instance_info->devices.end())
             instance_info->devices.erase(it);
+        instance_info->loaderDataFuncs.erase(device);
+        layer_info->root.removeDevice(device);
 
         // destroy device
         auto vkDestroyDevice = reinterpret_cast<PFN_vkDestroyDevice>(
@@ -242,6 +255,15 @@ namespace {
 
     // get optional function pointer override
     PFN_vkVoidFunction getProcAddr(const std::string& name) {
+        if (!layer_info)
+            return nullptr;
+        if (!layer_info->root.active()
+                && name != "vkCreateInstance"
+                && name != "vkCreateDevice"
+                && name != "vkDestroyDevice"
+                && name != "vkDestroyInstance")
+            return nullptr;
+
         auto it = layer_info->map.find(name);
         if (it != layer_info->map.end())
             return it->second;
@@ -268,6 +290,56 @@ namespace {
 
         if (!instance_info->funcs.GetDeviceProcAddr) return nullptr;
         return instance_info->funcs.GetDeviceProcAddr(device, name);
+    }
+
+    void setLoaderData(VkDevice device, VkQueue queue) {
+        const auto& it = instance_info->loaderDataFuncs.find(device);
+        if (it == instance_info->loaderDataFuncs.end() || !it->second)
+            return;
+
+        const auto res = it->second(device, queue);
+        if (res != VK_SUCCESS)
+            std::cerr << "lsfg-vk: vkSetDeviceLoaderData() failed for app queue\n";
+    }
+
+    void myvkGetDeviceQueue(
+            VkDevice device, uint32_t queueFamilyIndex,
+            uint32_t queueIndex, VkQueue* queue) {
+        auto* next = reinterpret_cast<PFN_vkGetDeviceQueue>(
+            instance_info->funcs.GetDeviceProcAddr(device, "vkGetDeviceQueue"));
+        if (!next) {
+            std::cerr << "lsfg-vk: failed to get next layer's vkGetDeviceQueue\n";
+            if (queue)
+                *queue = VK_NULL_HANDLE;
+            return;
+        }
+
+        next(device, queueFamilyIndex, queueIndex, queue);
+        if (queue && *queue)
+            setLoaderData(device, *queue);
+        layer_info->root.logQueueRequest(
+            device, queueFamilyIndex, queueIndex, "vkGetDeviceQueue");
+    }
+
+    void myvkGetDeviceQueue2(
+            VkDevice device, const VkDeviceQueueInfo2* queueInfo,
+            VkQueue* queue) {
+        auto* next = reinterpret_cast<PFN_vkGetDeviceQueue2>(
+            instance_info->funcs.GetDeviceProcAddr(device, "vkGetDeviceQueue2"));
+        if (!next) {
+            std::cerr << "lsfg-vk: failed to get next layer's vkGetDeviceQueue2\n";
+            if (queue)
+                *queue = VK_NULL_HANDLE;
+            return;
+        }
+
+        next(device, queueInfo, queue);
+        if (queue && *queue)
+            setLoaderData(device, *queue);
+        if (queueInfo)
+            layer_info->root.logQueueRequest(
+                device, queueInfo->queueFamilyIndex,
+                queueInfo->queueIndex, "vkGetDeviceQueue2");
     }
 }
 
@@ -384,6 +456,16 @@ namespace {
             const auto& it = instance_info->swapchains.find(swapchain);
             if (it == instance_info->swapchains.end())
                 return VK_ERROR_INITIALIZATION_FAILED;
+            if (!layer_info->root.hasSwapchainContext(swapchain))
+                return it->second.get().df().QueuePresentKHR(queue, info);
+        }
+
+        for (size_t i = 0; i < info->swapchainCount; i++) {
+            const auto& swapchain = info->pSwapchains[i];
+
+            const auto& it = instance_info->swapchains.find(swapchain);
+            if (it == instance_info->swapchains.end())
+                return VK_ERROR_INITIALIZATION_FAILED;
 
             try {
                 std::vector<VkSemaphore> waitSemaphores;
@@ -470,6 +552,8 @@ VkResult vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVers
                 { "vkCreateDevice", VKPTR(myvkCreateDevice) },
                 { "vkDestroyDevice", VKPTR(myvkDestroyDevice) },
                 { "vkDestroyInstance", VKPTR(myvkDestroyInstance) },
+                { "vkGetDeviceQueue", VKPTR(myvkGetDeviceQueue) },
+                { "vkGetDeviceQueue2", VKPTR(myvkGetDeviceQueue2) },
                 { "vkCreateSwapchainKHR", VKPTR(myvkCreateSwapchainKHR) },
                 { "vkQueuePresentKHR", VKPTR(myvkQueuePresentKHR) },
                 { "vkDestroySwapchainKHR", VKPTR(myvkDestroySwapchainKHR) }
@@ -477,13 +561,6 @@ VkResult vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVers
             },
             .root = Root()
         };
-
-        if (!layer_info->root.active()) { // skip inactive
-            delete layer_info; // NOLINT (memory management)
-            layer_info = nullptr;
-
-            return VK_ERROR_INITIALIZATION_FAILED;
-        }
     } catch (const std::exception& e) {
         std::cerr << "lsfg-vk: something went wrong during lsfg-vk layer initialization:\n";
         std::cerr << "- " << e.what() << '\n';
@@ -497,4 +574,34 @@ VkResult vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVers
     pVersionStruct->pfnGetDeviceProcAddr = myvkGetDeviceProcAddr;
     pVersionStruct->pfnGetInstanceProcAddr = myvkGetInstanceProcAddr;
     return VK_SUCCESS;
+}
+
+__attribute__((visibility("default")))
+PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const char* name) {
+    if (!name)
+        return nullptr;
+    if (std::string(name) == "vkNegotiateLoaderLayerInterfaceVersion")
+        return reinterpret_cast<PFN_vkVoidFunction>(vkNegotiateLoaderLayerInterfaceVersion);
+    if (std::string(name) == "vkGetInstanceProcAddr")
+        return reinterpret_cast<PFN_vkVoidFunction>(vkGetInstanceProcAddr);
+    if (std::string(name) == "vkGetDeviceProcAddr")
+        return reinterpret_cast<PFN_vkVoidFunction>(vkGetDeviceProcAddr);
+    if (!layer_info)
+        return nullptr;
+
+    return myvkGetInstanceProcAddr(instance, name);
+}
+
+__attribute__((visibility("default")))
+PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice device, const char* name) {
+    if (!name)
+        return nullptr;
+    if (std::string(name) == "vkGetInstanceProcAddr")
+        return reinterpret_cast<PFN_vkVoidFunction>(vkGetInstanceProcAddr);
+    if (std::string(name) == "vkGetDeviceProcAddr")
+        return reinterpret_cast<PFN_vkVoidFunction>(vkGetDeviceProcAddr);
+    if (!layer_info)
+        return nullptr;
+
+    return myvkGetDeviceProcAddr(device, name);
 }

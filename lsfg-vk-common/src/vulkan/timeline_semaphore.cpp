@@ -77,6 +77,13 @@ TimelineSemaphore::TimelineSemaphore(const vk::Vulkan& vk, uint32_t initial,
         std::optional<int> importFd, std::optional<int*> exportFd)
     : semaphore(createTimelineSemaphore(vk, initial, importFd, exportFd)) {}
 
+TimelineSemaphore::TimelineSemaphore(VkSemaphore semaphore)
+    : semaphore(new VkSemaphore(semaphore)) {}
+
+TimelineSemaphore TimelineSemaphore::borrowed(VkSemaphore semaphore) {
+    return TimelineSemaphore(semaphore);
+}
+
 void TimelineSemaphore::signal(const vk::Vulkan& vk, uint64_t value) const {
     const VkSemaphoreSignalInfo signalInfo{
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,

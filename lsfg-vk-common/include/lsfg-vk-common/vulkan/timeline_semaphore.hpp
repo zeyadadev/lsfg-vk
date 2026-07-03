@@ -24,6 +24,11 @@ namespace vk {
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt);
 
+        /// borrow a timeline semaphore wrapper without taking ownership of its handle
+        /// @param semaphore semaphore handle to borrow
+        /// @return non-owning timeline semaphore wrapper
+        [[nodiscard]] static TimelineSemaphore borrowed(VkSemaphore semaphore);
+
         /// signal the timeline semaphore
         /// @param vk the vulkan instance
         /// @param value the value to signal to
@@ -43,6 +48,8 @@ namespace vk {
         /// @return the VkSemaphore handle
         [[nodiscard]] const auto& handle() const { return *this->semaphore; }
     private:
+        explicit TimelineSemaphore(VkSemaphore semaphore);
+
         ls::owned_ptr<VkSemaphore> semaphore;
     };
 }

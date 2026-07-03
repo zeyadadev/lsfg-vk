@@ -67,8 +67,9 @@ void layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile, uint3
 }
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
-            ls::GameConf profile, SwapchainInfo info) :
+            ls::GameConf profile, SwapchainInfo info, bool sameDevice) :
         instance(backend),
+        sameDevice(sameDevice),
         profile(std::move(profile)), info(std::move(info)) {
     const VkExtent2D extent = this->info.extent;
     const bool hdr = this->info.format > 57;
@@ -77,34 +78,71 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
     std::vector<int> destinationFds(this->profile.multiplier - 1);
 
     this->sourceImages.reserve(sourceFds.size());
-    for (int& fd : sourceFds)
+    for (int& fd : sourceFds) {
+        const VkImageUsageFlags usage = this->sameDevice ?
+            (VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK_IMAGE_USAGE_STORAGE_BIT) :
+            (VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        const std::optional<int*> exportFd = this->sameDevice ?
+            std::nullopt : std::optional<int*>{&fd};
         this->sourceImages.emplace_back(vk,
             extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
+            usage,
+            std::nullopt, exportFd);
+    }
 
     this->destinationImages.reserve(destinationFds.size());
-    for (int& fd : destinationFds)
+    for (int& fd : destinationFds) {
+        const VkImageUsageFlags usage = this->sameDevice ?
+            (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                | VK_IMAGE_USAGE_STORAGE_BIT) :
+            (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        const std::optional<int*> exportFd = this->sameDevice ?
+            std::nullopt : std::optional<int*>{&fd};
         this->destinationImages.emplace_back(vk,
             extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            std::nullopt, &fd);
+            usage,
+            std::nullopt, exportFd);
+    }
 
     int syncFd{};
-    this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
+    const std::optional<int*> exportSyncFd = this->sameDevice ?
+        std::nullopt : std::optional<int*>{&syncFd};
+    this->syncSemaphore.emplace(vk, 0, std::nullopt,
+        exportSyncFd);
 
     try {
-        this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
-            new ls::R<backend::Context>(backend.openContext(
-                { sourceFds.at(0), sourceFds.at(1) }, destinationFds, syncFd,
-                extent.width, extent.height,
-                hdr, 1.0F / this->profile.flow_scale, this->profile.performance_mode
-            )),
-            [backend = &backend](ls::R<backend::Context>& ctx) {
-                backend->closeContext(ctx);
-            }
-        );
+        if (this->sameDevice) {
+            backend::ImageList destImages;
+            destImages.reserve(this->destinationImages.size());
+            for (const auto& image : this->destinationImages)
+                destImages.push_back(std::cref(image));
 
+            this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
+                new ls::R<backend::Context>(backend.openContext(
+                    { std::cref(this->sourceImages.at(0)),
+                      std::cref(this->sourceImages.at(1)) },
+                    std::move(destImages), this->syncSemaphore->handle(),
+                    extent.width, extent.height,
+                    hdr, 1.0F / this->profile.flow_scale, this->profile.performance_mode
+                )),
+                [backend = &backend](ls::R<backend::Context>& ctx) {
+                    backend->closeContext(ctx);
+                }
+            );
+        } else {
+            this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
+                new ls::R<backend::Context>(backend.openContext(
+                    { sourceFds.at(0), sourceFds.at(1) }, destinationFds, syncFd,
+                    extent.width, extent.height,
+                    hdr, 1.0F / this->profile.flow_scale, this->profile.performance_mode
+                )),
+                [backend = &backend](ls::R<backend::Context>& ctx) {
+                    backend->closeContext(ctx);
+                }
+            );
+
+        }
         backend::makeLeaking(); // don't worry about it :3
     } catch (const std::exception& e) {
         throw ls::error("failed to create swapchain context", e);
@@ -169,6 +207,24 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto& cmdbuf = *this->renderCommandBuffer;
     cmdbuf.begin(vk);
 
+    std::vector<vk::Barrier> sourcePostBarriers{
+        barrierHelper(swapchainImage,
+            VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_MEMORY_READ_BIT,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        )
+    };
+    if (this->sameDevice)
+        sourcePostBarriers.push_back(
+            barrierHelper(sourceImage.handle(),
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_GENERAL
+            )
+        );
+
     cmdbuf.blitImage(vk,
         {
             barrierHelper(swapchainImage,
@@ -180,20 +236,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             barrierHelper(sourceImage.handle(),
                 VK_ACCESS_NONE,
                 VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_IMAGE_LAYOUT_UNDEFINED,
+                this->sameDevice && this->fidx >= 2 ?
+                    VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
             ),
         },
         { swapchainImage, sourceImage.handle() },
         sourceImage.getExtent(),
-        {
-            barrierHelper(swapchainImage,
-                VK_ACCESS_TRANSFER_READ_BIT,
-                VK_ACCESS_MEMORY_READ_BIT,
-                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-            ),
-        }
+        sourcePostBarriers
     );
 
     cmdbuf.end(vk);
@@ -223,12 +273,31 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         auto& cmdbuf = pass.commandBuffer;
         cmdbuf.begin(vk);
 
+        std::vector<vk::Barrier> destinationPostBarriers{
+            barrierHelper(aquiredSwapchainImage,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_MEMORY_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            )
+        };
+        if (this->sameDevice)
+            destinationPostBarriers.push_back(
+                barrierHelper(destinationImage.handle(),
+                    VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_GENERAL
+                )
+            );
+
         cmdbuf.blitImage(vk,
             {
                 barrierHelper(destinationImage.handle(),
                     VK_ACCESS_NONE,
                     VK_ACCESS_TRANSFER_READ_BIT,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    this->sameDevice ?
+                        VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
                 ),
                 barrierHelper(aquiredSwapchainImage,
@@ -240,14 +309,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             },
             { destinationImage.handle(), aquiredSwapchainImage },
             destinationImage.getExtent(),
-            {
-                barrierHelper(aquiredSwapchainImage,
-                    VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                ),
-            }
+            destinationPostBarriers
         );
 
         std::vector<VkSemaphore> waitSemaphores{ pass.acquireSemaphore.handle() };

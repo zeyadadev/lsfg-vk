@@ -206,17 +206,17 @@ void CommandBuffer::submit(const vk::Vulkan& vk,
         VkSemaphore signalTimelineSemaphore, uint64_t signalValue,
         VkFence fence) const {
     // create arrays of semaphores and values
-    if (waitTimelineSemaphore)
-        waitSemaphores.push_back(waitTimelineSemaphore);
-
     std::vector<uint64_t> waitValues(waitSemaphores.size(), 0);
-    waitValues.back() = waitValue;
-
-    if (signalTimelineSemaphore)
-        signalSemaphores.push_back(signalTimelineSemaphore);
+    if (waitTimelineSemaphore) {
+        waitSemaphores.push_back(waitTimelineSemaphore);
+        waitValues.push_back(waitValue);
+    }
 
     std::vector<uint64_t> signalValues(signalSemaphores.size(), 0);
-    signalValues.back() = signalValue;
+    if (signalTimelineSemaphore) {
+        signalSemaphores.push_back(signalTimelineSemaphore);
+        signalValues.push_back(signalValue);
+    }
 
     // create submit info
     const VkTimelineSemaphoreSubmitInfo timelineInfo{

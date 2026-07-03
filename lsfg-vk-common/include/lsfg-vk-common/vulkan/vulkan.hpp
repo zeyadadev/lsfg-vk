@@ -48,6 +48,11 @@ namespace vk {
         )
     >&;
 
+    struct QueueSelection {
+        uint32_t familyIndex;
+        uint32_t queueIndex;
+    };
+
     /// vulkan device function pointers
     struct VulkanDeviceFuncs {
         PFN_vkGetDeviceQueue GetDeviceQueue;
@@ -179,7 +184,8 @@ namespace vk {
             VulkanDeviceFuncs deviceFuncs,
             bool isGraphical = true,
             std::optional<PFN_vkSetDeviceLoaderData> setLoaderData = std::nullopt,
-            const std::optional<std::filesystem::path>& cachefile = std::nullopt);
+            const std::optional<std::filesystem::path>& cachefile = std::nullopt,
+            std::optional<QueueSelection> queueSelection = std::nullopt);
 
         /// find a memory type index
         /// @param validTypes bitset of valid memory types
@@ -229,6 +235,7 @@ namespace vk {
 
         VkPhysicalDevice phys_dev;
         uint32_t queueFamilyIdx;
+        uint32_t queueIdx;
         bool fp16;
 
         ls::owned_ptr<VkDevice> device;

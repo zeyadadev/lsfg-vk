@@ -28,6 +28,11 @@ namespace vk {
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt);
 
+        /// borrow an image wrapper without taking ownership of its handles
+        /// @param image image wrapper to borrow from
+        /// @return non-owning image wrapper
+        [[nodiscard]] static Image borrowed(const Image& image);
+
         /// get the image handle
         /// @return the image handle
         [[nodiscard]] const auto& handle() const { return this->image.get(); }
@@ -39,6 +44,8 @@ namespace vk {
         /// @return the extent of the image
         [[nodiscard]] VkExtent2D getExtent() const { return this->extent; }
     private:
+        Image(VkImage image, VkImageView view, VkExtent2D extent);
+
         ls::owned_ptr<VkImage> image;
         ls::owned_ptr<VkDeviceMemory> memory;
         ls::owned_ptr<VkImageView> view;

@@ -45,7 +45,7 @@ namespace lsfgvk::layer {
         /// @param profile active game profile
         /// @param info swapchain info
         Swapchain(const vk::Vulkan& vk, backend::Instance& backend,
-            ls::GameConf profile, SwapchainInfo info);
+            ls::GameConf profile, SwapchainInfo info, bool sameDevice);
 
         /// present a frame
         /// @param vk vulkan instance
@@ -74,6 +74,7 @@ namespace lsfgvk::layer {
 
         ls::R<backend::Instance> instance;
         ls::owned_ptr<ls::R<backend::Context>> ctx;
+        bool sameDevice;
         size_t idx{1};
         size_t fidx{0}; // real frame index
 

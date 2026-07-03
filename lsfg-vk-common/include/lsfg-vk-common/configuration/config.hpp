@@ -15,6 +15,8 @@ namespace ls {
     struct GlobalConf {
         /// optional dll override
         std::optional<std::string> dll;
+        /// backend implementation to use
+        std::optional<std::string> backend;
         /// should fp16 be allowed
         bool allow_fp16{};
     };

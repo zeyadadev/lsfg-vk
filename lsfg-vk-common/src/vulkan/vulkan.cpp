@@ -158,6 +158,12 @@ namespace {
         return func;
     }
 
+    template<typename T>
+    T optional_dpa(const VulkanInstanceFuncs& funcs, VkDevice device, const char* name) {
+        return reinterpret_cast<T>(
+            funcs.GetDeviceProcAddr(device, name));
+    }
+
     /// create a logical device
     ls::owned_ptr<VkDevice> createLogicalDevice(const VulkanInstanceFuncs& fi,
             VkPhysicalDevice physdev, uint32_t cfi, bool fp16) {
@@ -207,10 +213,10 @@ namespace {
     /// get a queue from the logical device
     VkQueue getQueue(const VulkanDeviceFuncs& fd, VkDevice device,
             std::optional<PFN_vkSetDeviceLoaderData> setLoaderData,
-            uint32_t cfi) {
+            uint32_t cfi, uint32_t queueIndex) {
         VkQueue queue{};
 
-        fd.GetDeviceQueue(device, cfi, 0, &queue);
+        fd.GetDeviceQueue(device, cfi, queueIndex, &queue);
 
         if (setLoaderData) { // optionally set loader data
             auto res = (*setLoaderData)(device, queue);
@@ -383,15 +389,15 @@ VulkanDeviceFuncs vk::initVulkanDeviceFuncs(const VulkanInstanceFuncs& f, VkDevi
         .GetSemaphoreFdKHR = dpa<PFN_vkGetSemaphoreFdKHR>(f, d, "vkGetSemaphoreFdKHR"),
 
         .CreateSwapchainKHR = graphical ?
-            dpa<PFN_vkCreateSwapchainKHR>(f, d, "vkCreateSwapchainKHR") : nullptr,
+            optional_dpa<PFN_vkCreateSwapchainKHR>(f, d, "vkCreateSwapchainKHR") : nullptr,
         .GetSwapchainImagesKHR = graphical ?
-            dpa<PFN_vkGetSwapchainImagesKHR>(f, d, "vkGetSwapchainImagesKHR") : nullptr,
+            optional_dpa<PFN_vkGetSwapchainImagesKHR>(f, d, "vkGetSwapchainImagesKHR") : nullptr,
         .AcquireNextImageKHR = graphical ?
-            dpa<PFN_vkAcquireNextImageKHR>(f, d, "vkAcquireNextImageKHR") : nullptr,
+            optional_dpa<PFN_vkAcquireNextImageKHR>(f, d, "vkAcquireNextImageKHR") : nullptr,
         .QueuePresentKHR = graphical ?
-            dpa<PFN_vkQueuePresentKHR>(f, d, "vkQueuePresentKHR") : nullptr,
+            optional_dpa<PFN_vkQueuePresentKHR>(f, d, "vkQueuePresentKHR") : nullptr,
         .DestroySwapchainKHR = graphical ?
-            dpa<PFN_vkDestroySwapchainKHR>(f, d, "vkDestroySwapchainKHR") : nullptr
+            optional_dpa<PFN_vkDestroySwapchainKHR>(f, d, "vkDestroySwapchainKHR") : nullptr
     };
 }
 
@@ -412,6 +418,7 @@ Vulkan::Vulkan(const std::string& appName, version appVersion,
     )),
     queueFamilyIdx(findQFI(this->instance_funcs, this->phys_dev,
         isGraphical ? VK_QUEUE_GRAPHICS_BIT : VK_QUEUE_COMPUTE_BIT)),
+    queueIdx(0),
     fp16(checkFP16(this->instance_funcs, this->phys_dev)),
     device(createLogicalDevice(this->instance_funcs,
         this->phys_dev,
@@ -425,7 +432,7 @@ Vulkan::Vulkan(const std::string& appName, version appVersion,
     )),
     computeQueue(getQueue(this->device_funcs, *this->device,
         this->setLoaderData,
-        this->queueFamilyIdx)),
+        this->queueFamilyIdx, this->queueIdx)),
     cmdPool(createCommandPool(this->device_funcs,
         *this->device,
         this->queueFamilyIdx
@@ -442,19 +449,23 @@ Vulkan::Vulkan(VkInstance instance, VkDevice device,
         VulkanDeviceFuncs deviceFuncs,
         bool isGraphical,
         std::optional<PFN_vkSetDeviceLoaderData> setLoaderData,
-        const std::optional<std::filesystem::path>& cachefile) :
+        const std::optional<std::filesystem::path>& cachefile,
+        std::optional<QueueSelection> queueSelection) :
     instance(new VkInstance(instance)),
     instance_funcs(instanceFuncs),
     phys_dev(physdev),
-    queueFamilyIdx(findQFI(this->instance_funcs, this->phys_dev,
-        isGraphical ? VK_QUEUE_GRAPHICS_BIT : VK_QUEUE_COMPUTE_BIT)),
+    queueFamilyIdx(queueSelection.has_value() ?
+        queueSelection->familyIndex :
+        findQFI(this->instance_funcs, this->phys_dev,
+            isGraphical ? VK_QUEUE_GRAPHICS_BIT : VK_QUEUE_COMPUTE_BIT)),
+    queueIdx(queueSelection.has_value() ? queueSelection->queueIndex : 0),
     fp16(false),
     device(new VkDevice(device)),
     setLoaderData(setLoaderData),
     device_funcs(deviceFuncs),
     computeQueue(getQueue(this->device_funcs, *this->device,
         this->setLoaderData,
-        this->queueFamilyIdx)),
+        this->queueFamilyIdx, this->queueIdx)),
     cmdPool(createCommandPool(this->device_funcs,
         *this->device,
         this->queueFamilyIdx

@@ -11,6 +11,12 @@
 #include <utility>
 #include <vector>
 
+#include "lsfg-vk-common/helpers/pointers.hpp"
+#include "lsfg-vk-common/vulkan/image.hpp"
+#include "lsfg-vk-common/vulkan/vulkan.hpp"
+
+#include <vulkan/vulkan_core.h>
+
 namespace lsfgvk::backend {
 
     class [[gnu::visibility("default")]] ContextImpl;
@@ -51,6 +57,8 @@ namespace lsfgvk::backend {
         std::pair<const std::string&, const std::string&> ids, // (vendor ID, device ID) 0xXXXX format
         const std::optional<std::string>& pci // (bus:slot.func) if available, no padded zeros
     )>;
+    using ImagePair = std::pair<ls::R<const vk::Image>, ls::R<const vk::Image>>;
+    using ImageList = std::vector<ls::R<const vk::Image>>;
 
     ///
     /// Main entry point of the library
@@ -68,6 +76,21 @@ namespace lsfgvk::backend {
         ///
         Instance(
             const DevicePicker& devicePicker,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision
+        );
+
+        ///
+        /// Create a lsfg-vk instance using an externally managed Vulkan device.
+        ///
+        /// @param vulkan Vulkan wrapper for the external device and reserved queue.
+        /// @param shaderDllPath Path to the Lossless.dll file to load shaders from.
+        /// @param allowLowPrecision Whether to load low-precision (FP16) shaders if supported.
+        ///
+        /// @throws backend::error on failure
+        ///
+        Instance(
+            vk::Vulkan&& vulkan,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision
         );
@@ -102,6 +125,28 @@ namespace lsfgvk::backend {
             std::pair<int, int> sourceFds,
             const std::vector<int>& destFds,
             int syncFd,
+            uint32_t width, uint32_t height,
+            bool hdr, float flow, bool perf
+        );
+
+        ///
+        /// Open a same-device frame generation context.
+        ///
+        /// @param sourceImages Pair of source images alternated between.
+        /// @param destImages Vector of output images.
+        /// @param syncSemaphore Timeline semaphore used for synchronization.
+        /// @param width Width of the images.
+        /// @param height Height of the images.
+        /// @param hdr Whether the images are HDR.
+        /// @param flow Motion flow factor.
+        /// @param perf Whether to enable performance mode.
+        ///
+        /// @throws backend::error on failure
+        ///
+        Context& openContext(
+            ImagePair sourceImages,
+            ImageList destImages,
+            VkSemaphore syncSemaphore,
             uint32_t width, uint32_t height,
             bool hdr, float flow, bool perf
         );

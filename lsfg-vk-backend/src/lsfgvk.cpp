@@ -66,6 +66,9 @@ namespace lsfgvk::backend {
         InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision);
+        InstanceImpl(vk::Vulkan&& vulkan,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision);
 
         /// get the Vulkan instance
         /// @return the Vulkan instance
@@ -93,6 +96,12 @@ namespace lsfgvk::backend {
 #endif
     };
 
+    struct ContextImages {
+        std::pair<vk::Image, vk::Image> sourceImages;
+        std::vector<vk::Image> destImages;
+        vk::TimelineSemaphore syncSemaphore;
+    };
+
     /// context class
     class ContextImpl {
     public:
@@ -101,11 +110,17 @@ namespace lsfgvk::backend {
         ContextImpl(const InstanceImpl& instance,
             std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
             VkExtent2D extent, bool hdr, float flow, bool perf);
+        ContextImpl(const InstanceImpl& instance,
+            ImagePair sourceImages, ImageList destImages, VkSemaphore syncSemaphore,
+            VkExtent2D extent, bool hdr, float flow, bool perf);
 
         /// schedule frames
         /// (see lsfg-vk documentation)
         void scheduleFrames();
     private:
+        ContextImpl(const InstanceImpl& instance, ContextImages&& contextImages,
+            VkExtent2D extent, bool hdr, float flow, bool perf);
+
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
         vk::Image blackImage;
@@ -191,6 +206,15 @@ Instance::Instance(
     );
 }
 
+Instance::Instance(
+        vk::Vulkan&& vulkan,
+        const std::filesystem::path& shaderDllPath,
+        bool allowLowPrecision) {
+    this->m_impl = std::make_unique<InstanceImpl>(
+        std::move(vulkan), shaderDllPath, allowLowPrecision
+    );
+}
+
 namespace {
     /// find the cache file path
     std::filesystem::path findCacheFilePath() {
@@ -273,12 +297,34 @@ InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
     vk.persistPipelineCache(); // will silently fail
 }
 
+InstanceImpl::InstanceImpl(vk::Vulkan&& vulkan,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision)
+        : vk(std::move(vulkan)),
+        shaders(createShaderRegistry(this->vk, shaderDllPath,
+            allowLowPrecision && vk.supportsFP16())) {
+#ifdef LSFGVK_TESTING_RENDERDOC
+    this->renderdoc = loadRenderDocIntegration();
+#endif
+    vk.persistPipelineCache(); // will silently fail
+}
+
 Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<int>& destFds,
         int syncFd, uint32_t width, uint32_t height,
         bool hdr, float flow, bool perf) {
     const VkExtent2D extent{ width, height };
     return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
         sourceFds, destFds, syncFd,
+        extent, hdr, flow, perf
+    )).get();
+}
+
+Context& Instance::openContext(ImagePair sourceImages, ImageList destImages,
+        VkSemaphore syncSemaphore, uint32_t width, uint32_t height,
+        bool hdr, float flow, bool perf) {
+    const VkExtent2D extent{ width, height };
+    return *this->m_contexts.emplace_back(std::make_unique<ContextImpl>(*this->m_impl,
+        sourceImages, std::move(destImages), syncSemaphore,
         extent, hdr, flow, perf
     )).get();
 }
@@ -333,6 +379,32 @@ namespace {
         } catch (const std::exception& e) {
             throw backend::error("Unable to import timeline semaphore", e);
         }
+    }
+    ContextImages importContextImages(const vk::Vulkan& vk,
+            std::pair<int, int> sourceFds, const std::vector<int>& destFds,
+            int syncFd, VkExtent2D extent, VkFormat format) {
+        return {
+            .sourceImages = importImages(vk, sourceFds, extent, format),
+            .destImages = importImages(vk, destFds, extent, format),
+            .syncSemaphore = importTimelineSemaphore(vk, syncFd)
+        };
+    }
+    ContextImages borrowContextImages(
+            ImagePair sourceImages, const ImageList& destImages,
+            VkSemaphore syncSemaphore) {
+        std::vector<vk::Image> borrowedDestImages;
+        borrowedDestImages.reserve(destImages.size());
+        for (const auto& image : destImages)
+            borrowedDestImages.push_back(vk::Image::borrowed(image.get()));
+
+        return {
+            .sourceImages = {
+                vk::Image::borrowed(sourceImages.first.get()),
+                vk::Image::borrowed(sourceImages.second.get())
+            },
+            .destImages = std::move(borrowedDestImages),
+            .syncSemaphore = vk::TimelineSemaphore::borrowed(syncSemaphore)
+        };
     }
     /// create prepass semaphores
     vk::TimelineSemaphore createPrepassSemaphore(const vk::Vulkan& vk) {
@@ -401,16 +473,30 @@ namespace {
 ContextImpl::ContextImpl(const InstanceImpl& instance,
             std::pair<int, int> sourceFds, const std::vector<int>& destFds, int syncFd,
             VkExtent2D extent, bool hdr, float flow, bool perf) :
-        sourceImages(importImages(instance.getVulkan(), sourceFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
-        destImages(importImages(instance.getVulkan(), destFds,
-            extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM)),
+        ContextImpl(instance,
+            importContextImages(instance.getVulkan(), sourceFds, destFds, syncFd,
+                extent, hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM),
+            extent, hdr, flow, perf) {
+}
+
+ContextImpl::ContextImpl(const InstanceImpl& instance,
+            ImagePair sourceImages, ImageList destImages, VkSemaphore syncSemaphore,
+            VkExtent2D extent, bool hdr, float flow, bool perf) :
+        ContextImpl(instance,
+            borrowContextImages(sourceImages, destImages, syncSemaphore),
+            extent, hdr, flow, perf) {
+}
+
+ContextImpl::ContextImpl(const InstanceImpl& instance, ContextImages&& contextImages,
+            VkExtent2D extent, bool hdr, float flow, bool perf) :
+        sourceImages(std::move(contextImages.sourceImages)),
+        destImages(std::move(contextImages.destImages)),
         blackImage(createBlackImage(instance.getVulkan())),
-        syncSemaphore(importTimelineSemaphore(instance.getVulkan(), syncFd)),
+        syncSemaphore(std::move(contextImages.syncSemaphore)),
         prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
-        cmdbufs(createCommandBuffers(instance.getVulkan(), destFds.size() + 1)),
+        cmdbufs(createCommandBuffers(instance.getVulkan(), this->destImages.size() + 1)),
         cmdbufFence(instance.getVulkan()),
-        ctx(createCtx(instance, extent, hdr, flow, perf, destFds.size())),
+        ctx(createCtx(instance, extent, hdr, flow, perf, this->destImages.size())),
         mipmaps(ctx, sourceImages),
         alpha0{
             Alpha0(ctx, mipmaps.getImages().at(0)),
@@ -504,6 +590,8 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
     // initialize all images
     std::vector<VkImage> images{};
     images.push_back(this->blackImage.handle());
+    for (const auto& img : this->destImages)
+        images.push_back(img.handle());
     mipmaps.prepare(images);
     for (size_t i = 0; i < 7; ++i) {
         alpha0.at(i).prepare(images);

@@ -25,6 +25,35 @@ using namespace lsfgvk;
 using namespace lsfgvk::layer;
 
 namespace {
+    bool same_device_mode(const ls::GlobalConf& global) {
+        const char* backend = std::getenv("LSFGVK_BACKEND");
+        if (backend && *backend != '\0')
+            return std::string(backend) == "same-device";
+
+        return global.backend && *global.backend == "same-device";
+    }
+
+    std::string queue_flags_string(VkQueueFlags flags) {
+        std::string text;
+        const auto add = [&text, flags](VkQueueFlagBits bit, const char* name) {
+            if (!(flags & bit))
+                return;
+            if (!text.empty())
+                text += '|';
+            text += name;
+        };
+
+        add(VK_QUEUE_GRAPHICS_BIT, "GRAPHICS");
+        add(VK_QUEUE_COMPUTE_BIT, "COMPUTE");
+        add(VK_QUEUE_TRANSFER_BIT, "TRANSFER");
+        add(VK_QUEUE_SPARSE_BINDING_BIT, "SPARSE");
+        add(VK_QUEUE_PROTECTED_BIT, "PROTECTED");
+
+        if (text.empty())
+            text = "0";
+        return text;
+    }
+
     /// helper function to add required extensions
     std::vector<const char*> add_extensions(const char* const* existingExtensions, size_t count,
             const std::vector<const char*>& requiredExtensions) {
@@ -41,6 +70,85 @@ namespace {
         }
 
         return extensions;
+    }
+
+    std::optional<vk::QueueSelection> reserve_same_device_queue(
+            const vk::VulkanInstanceFuncs& funcs, VkPhysicalDevice physdev,
+            VkDeviceCreateInfo& createInfo,
+            std::vector<VkDeviceQueueCreateInfo>& queueInfos,
+            std::vector<std::vector<float>>& queuePriorities) {
+        uint32_t queueFamilyCount{};
+        funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &queueFamilyCount, VK_NULL_HANDLE);
+        std::vector<VkQueueFamilyProperties> families(queueFamilyCount);
+        funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &queueFamilyCount, families.data());
+
+        queueInfos.reserve(createInfo.queueCreateInfoCount);
+        queuePriorities.reserve(createInfo.queueCreateInfoCount);
+        std::vector<uint32_t> requestedByFamily(families.size());
+        for (uint32_t i = 0; i < createInfo.queueCreateInfoCount; ++i) {
+            const auto& requested = createInfo.pQueueCreateInfos[i];
+            auto& priorities = queuePriorities.emplace_back();
+            priorities.reserve(requested.queueCount + 1);
+
+            for (uint32_t j = 0; j < requested.queueCount; ++j)
+                priorities.push_back(requested.pQueuePriorities ?
+                    requested.pQueuePriorities[j] : 1.0F);
+
+            auto& copy = queueInfos.emplace_back(requested);
+            copy.pQueuePriorities = priorities.data();
+
+            if (requested.queueFamilyIndex < requestedByFamily.size())
+                requestedByFamily.at(requested.queueFamilyIndex) += requested.queueCount;
+        }
+
+        std::cerr << "lsfg-vk: same-device queue families:\n";
+        for (size_t i = 0; i < families.size(); ++i) {
+            const auto& family = families.at(i);
+            std::cerr << "lsfg-vk:   physical family " << i
+                << ": queues=" << family.queueCount
+                << ", flags=" << queue_flags_string(family.queueFlags) << '\n';
+        }
+        std::cerr << "lsfg-vk: same-device app queue requests:\n";
+        for (const auto& requested : queueInfos) {
+            const uint32_t physicalCount = requested.queueFamilyIndex < families.size() ?
+                families.at(requested.queueFamilyIndex).queueCount : 0;
+            const uint32_t totalRequested = requested.queueFamilyIndex < requestedByFamily.size() ?
+                requestedByFamily.at(requested.queueFamilyIndex) : requested.queueCount;
+            std::cerr << "lsfg-vk:   create-info family " << requested.queueFamilyIndex
+                << ": queueCount=" << requested.queueCount
+                << ", totalRequestedForFamily=" << totalRequested
+                << ", physicalQueues=" << physicalCount << '\n';
+        }
+
+        constexpr VkQueueFlags requiredFlags =
+            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
+        for (size_t i = 0; i < queueInfos.size(); ++i) {
+            auto& requested = queueInfos.at(i);
+            if (requested.queueFamilyIndex >= families.size())
+                continue;
+
+            const auto& family = families.at(requested.queueFamilyIndex);
+            if ((family.queueFlags & requiredFlags) != requiredFlags)
+                continue;
+            const uint32_t totalRequested = requestedByFamily.at(requested.queueFamilyIndex);
+            if (totalRequested >= family.queueCount)
+                continue;
+
+            const vk::QueueSelection selection{
+                .familyIndex = requested.queueFamilyIndex,
+                .queueIndex = totalRequested
+            };
+            queuePriorities.at(i).push_back(1.0F);
+            requested.queueCount++;
+            requested.pQueuePriorities = queuePriorities.at(i).data();
+            requestedByFamily.at(requested.queueFamilyIndex)++;
+
+            createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size());
+            createInfo.pQueueCreateInfos = queueInfos.data();
+            return selection;
+        }
+
+        return std::nullopt;
     }
 }
 
@@ -82,10 +190,27 @@ bool Root::update() {
     return true;
 }
 
+bool Root::sameDeviceMode() const {
+    return same_device_mode(this->config.get().global());
+}
+
+void Root::logQueueRequest(VkDevice device, uint32_t familyIndex,
+        uint32_t queueIndex, const char* source) const {
+    if (!this->active_profile.has_value() || !this->sameDeviceMode())
+        return;
+    if (this->sameDeviceQueues.contains(device))
+        return;
+
+    std::cerr << "lsfg-vk: app fetched queue via " << source
+        << ": family " << familyIndex << ", index " << queueIndex << '\n';
+}
+
 void Root::modifyInstanceCreateInfo(VkInstanceCreateInfo& createInfo,
         const std::function<void(void)>& finish) const {
-    if (!this->active_profile.has_value())
+    if (!this->active_profile.has_value()) {
+        finish();
         return;
+    }
 
     auto extensions = add_extensions(
         createInfo.ppEnabledExtensionNames,
@@ -102,21 +227,31 @@ void Root::modifyInstanceCreateInfo(VkInstanceCreateInfo& createInfo,
     finish();
 }
 
-void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
+std::optional<vk::QueueSelection> Root::modifyDeviceCreateInfo(
+        const vk::VulkanInstanceFuncs& funcs, VkPhysicalDevice physdev,
+        VkDeviceCreateInfo& createInfo,
         const std::function<void(void)>& finish) const {
-    if (!this->active_profile.has_value())
-        return;
+    if (!this->active_profile.has_value()) {
+        finish();
+        return std::nullopt;
+    }
+
+    const bool sameDevice = same_device_mode(this->config.get().global());
 
     auto extensions = add_extensions(
         createInfo.ppEnabledExtensionNames,
         createInfo.enabledExtensionCount,
-        {
-            "VK_KHR_external_memory",
-            "VK_KHR_external_memory_fd",
-            "VK_KHR_external_semaphore",
-            "VK_KHR_external_semaphore_fd",
-            "VK_KHR_timeline_semaphore"
-        }
+        sameDevice ?
+            std::vector<const char*>{
+                "VK_KHR_timeline_semaphore"
+            } :
+            std::vector<const char*>{
+                "VK_KHR_external_memory",
+                "VK_KHR_external_memory_fd",
+                "VK_KHR_external_semaphore",
+                "VK_KHR_external_semaphore_fd",
+                "VK_KHR_timeline_semaphore"
+            }
     );
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
@@ -145,13 +280,44 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
     if (!isFeatureEnabled)
         createInfo.pNext = &timelineFeatures;
 
+    std::vector<VkDeviceQueueCreateInfo> queueInfos;
+    std::vector<std::vector<float>> queuePriorities;
+    std::optional<vk::QueueSelection> queueSelection;
+    if (sameDevice) {
+        queueSelection = reserve_same_device_queue(
+            funcs, physdev, createInfo, queueInfos, queuePriorities);
+        if (queueSelection.has_value()) {
+            std::cerr << "lsfg-vk: same-device backend reserved queue family "
+                << queueSelection->familyIndex << ", queue index "
+                << queueSelection->queueIndex << '\n';
+        } else {
+            std::cerr << "lsfg-vk: same-device backend disabled for this device: "
+                "no spare graphics+compute+transfer queue is available\n";
+        }
+    }
+
     finish();
+    return queueSelection;
+}
+
+void Root::registerSameDeviceQueue(VkDevice device, vk::QueueSelection queue) {
+    this->sameDeviceQueues.emplace(device, queue);
+}
+
+void Root::removeDevice(VkDevice device) {
+    this->sameDeviceQueues.erase(device);
 }
 
 void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
         const std::function<void(void)>& finish) const {
-    if (!this->active_profile.has_value())
+    if (!this->active_profile.has_value()) {
+        finish();
         return;
+    }
+    if (same_device_mode(this->config.get().global()) && !this->sameDeviceQueues.contains(vk.dev())) {
+        finish();
+        return;
+    }
 
     VkSurfaceCapabilitiesKHR caps{}; // NOLINT (enum value 0)
     auto res = vk.fi().GetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -164,16 +330,23 @@ void Root::modifySwapchainCreateInfo(const vk::Vulkan& vk, VkSwapchainCreateInfo
     finish();
 }
 
-void Root::createSwapchainContext(const vk::Vulkan& vk,
+bool Root::createSwapchainContext(const vk::Vulkan& vk,
         VkSwapchainKHR swapchain, const SwapchainInfo& info) {
     if (!this->active_profile.has_value())
-        throw ls::error("attempted to create swapchain context while layer is inactive");
+        return false;
     const auto& profile = *this->active_profile;
+    const bool sameDevice = same_device_mode(this->config.get().global());
+    auto sameDeviceQueue = this->sameDeviceQueues.find(vk.dev());
+    if (sameDevice && sameDeviceQueue == this->sameDeviceQueues.end()) {
+        std::cerr << "lsfg-vk: same-device backend is inactive for this swapchain\n";
+        return false;
+    }
 
     if (!this->backend.has_value()) { // emplace backend late, due to loader bug
         const auto& global = this->config.get().global();
 
-        setenv("DISABLE_LSFGVK", "1", 1);
+        if (!sameDevice)
+            setenv("DISABLE_LSFGVK", "1", 1);
 
         try {
             std::string dll{};
@@ -182,31 +355,43 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             else
                 dll = ls::findShaderDll();
 
-            this->backend.emplace(
-                [gpu = profile.gpu](
-                    const std::string& deviceName,
-                    std::pair<const std::string&, const std::string&> ids,
-                    const std::optional<std::string>& pci
-                ) {
-                    if (!gpu)
-                        return true;
+            if (sameDevice) {
+                this->backend.emplace(
+                    vk::Vulkan(vk.inst(), vk.dev(), vk.physdev(),
+                        vk.fi(), vk.df(), false, vk.loaderdatafunc(),
+                        std::nullopt, sameDeviceQueue->second),
+                    dll, false
+                );
+            } else {
+                this->backend.emplace(
+                    [gpu = profile.gpu](
+                        const std::string& deviceName,
+                        std::pair<const std::string&, const std::string&> ids,
+                        const std::optional<std::string>& pci
+                    ) {
+                        if (!gpu)
+                            return true;
 
-                    return (deviceName == *gpu)
-                        || (ids.first + ":" + ids.second == *gpu)
-                        || (pci && *pci == *gpu);
-                },
-                dll, global.allow_fp16
-            );
+                        return (deviceName == *gpu)
+                            || (ids.first + ":" + ids.second == *gpu)
+                            || (pci && *pci == *gpu);
+                    },
+                    dll, global.allow_fp16
+                );
+            }
         } catch (const std::exception& e) {
-            unsetenv("DISABLE_LSFGVK");
+            if (!sameDevice)
+                unsetenv("DISABLE_LSFGVK");
             throw ls::error("failed to create backend instance", e);
         }
 
-        unsetenv("DISABLE_LSFGVK");
+        if (!sameDevice)
+            unsetenv("DISABLE_LSFGVK");
     }
 
     this->swapchains.emplace(swapchain,
-        Swapchain(vk, this->backend.mut(), profile, info));
+        Swapchain(vk, this->backend.mut(), profile, info, sameDevice));
+    return true;
 }
 
 void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {

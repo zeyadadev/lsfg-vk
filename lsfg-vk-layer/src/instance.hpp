@@ -26,6 +26,9 @@ namespace lsfgvk::layer {
         /// check if the layer is active
         /// @return true if active
         [[nodiscard]] bool active() const { return this->active_profile.has_value(); }
+        /// check if same-device backend mode is active
+        /// @return true if same-device mode is active
+        [[nodiscard]] bool sameDeviceMode() const;
 
         /// ensure the layer is up-to-date
         /// @return true if the configuration was updated
@@ -39,8 +42,14 @@ namespace lsfgvk::layer {
         /// modify device create info
         /// @param createInfo original create info
         /// @param finish function to call after modification
-        void modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
+        std::optional<vk::QueueSelection> modifyDeviceCreateInfo(
+            const vk::VulkanInstanceFuncs& funcs, VkPhysicalDevice physdev,
+            VkDeviceCreateInfo& createInfo,
             const std::function<void(void)>& finish) const;
+        void logQueueRequest(VkDevice device, uint32_t familyIndex,
+            uint32_t queueIndex, const char* source) const;
+        void registerSameDeviceQueue(VkDevice device, vk::QueueSelection queue);
+        void removeDevice(VkDevice device);
 
         /// modify swapchain create info
         /// @param vk vulkan instance
@@ -53,8 +62,11 @@ namespace lsfgvk::layer {
         /// @param swapchain swapchain handle
         /// @param info swapchain info
         /// @throws ls::error on failure
-        void createSwapchainContext(const vk::Vulkan& vk, VkSwapchainKHR swapchain,
+        bool createSwapchainContext(const vk::Vulkan& vk, VkSwapchainKHR swapchain,
             const SwapchainInfo& info);
+        [[nodiscard]] bool hasSwapchainContext(VkSwapchainKHR swapchain) const {
+            return this->swapchains.find(swapchain) != this->swapchains.end();
+        }
         /// get swapchain context
         /// @param swapchain swapchain handle
         /// @return swapchain context
@@ -74,6 +86,7 @@ namespace lsfgvk::layer {
         std::optional<ls::GameConf> active_profile;
 
         ls::lazy<backend::Instance> backend;
+        std::unordered_map<VkDevice, vk::QueueSelection> sameDeviceQueues;
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
     };
 

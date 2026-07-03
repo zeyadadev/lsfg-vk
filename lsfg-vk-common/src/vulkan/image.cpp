@@ -170,3 +170,17 @@ Image::Image(const vk::Vulkan& vk,
         )),
         extent(extent) {
 }
+
+Image::Image(VkImage image, VkImageView view, VkExtent2D extent) :
+        image(new VkImage(image)),
+        view(new VkImageView(view)),
+        extent(extent) {
+}
+
+Image Image::borrowed(const Image& image) {
+    return {
+        image.handle(),
+        image.imageview(),
+        image.getExtent()
+    };
+}

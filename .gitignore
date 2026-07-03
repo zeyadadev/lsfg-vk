@@ -1,5 +1,5 @@
 # cmake files
-/build
+/build*
 
 # ide
 /.zed

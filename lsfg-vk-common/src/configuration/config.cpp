@@ -31,6 +31,7 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
 
 [global]
 # dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
+backend = 'external-fd' # use 'same-device' on Mali drivers without OPAQUE_FD support
 allow_fp16 = true # this will improve give a MASSIVE performance boost on AMD, but be super slow on older (!) NVIDIA GPUs
 
 [[profile]]
@@ -110,11 +111,14 @@ namespace {
     GlobalConf parseGlobalConf(const toml::table& tbl) {
         const GlobalConf conf{
             .dll = tbl["dll"].value<std::string>(),
+            .backend = tbl["backend"].value<std::string>(),
             .allow_fp16 = tbl["allow_fp16"].value_or(true)
         };
 
         if (conf.dll && !std::filesystem::exists(*conf.dll))
             throw ls::error("path to dll is invalid");
+        if (conf.backend && *conf.backend != "external-fd" && *conf.backend != "same-device")
+            throw ls::error("unknown backend: " + *conf.backend);
 
         return conf;
     }
@@ -141,18 +145,24 @@ namespace {
     GlobalConf parseGlobalConfFromEnv() {
         GlobalConf conf{
             .dll = std::nullopt,
+            .backend = std::nullopt,
             .allow_fp16 = true
         };
 
         const char* dll = std::getenv("LSFGVK_DLL_PATH");
         if (dll && *dll != '\0')
             conf.dll = std::string(dll);
+        const char* backend = std::getenv("LSFGVK_BACKEND");
+        if (backend && *backend != '\0')
+            conf.backend = std::string(backend);
         const char* no_fp16 = std::getenv("LSFGVK_NO_FP16");
         if (no_fp16 && *no_fp16 != '\0')
             conf.allow_fp16 = std::string(no_fp16) != "1";
 
         if (conf.dll && !std::filesystem::exists(*conf.dll))
             throw ls::error("path to dll is invalid");
+        if (conf.backend && *conf.backend != "external-fd" && *conf.backend != "same-device")
+            throw ls::error("unknown backend: " + *conf.backend);
 
         return conf;
     }
@@ -219,6 +229,8 @@ void ConfigFile::write(const std::filesystem::path& path) const {
     toml::table global;
     if (this->globalConf.dll)
         global.insert("dll", *this->globalConf.dll);
+    if (this->globalConf.backend)
+        global.insert("backend", *this->globalConf.backend);
     global.insert("allow_fp16", this->globalConf.allow_fp16);
     table.insert("global", global);
 
